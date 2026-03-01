@@ -6,12 +6,14 @@ data/
 *.pkl
 *.joblib
 
-# Model files (if large)
+# Models
 models/*.pkl
 models/*.joblib
 
-# Python
+# Python cache files
 __pycache__/
 *.pyc
+
+# Environment
 .env
 venv/
