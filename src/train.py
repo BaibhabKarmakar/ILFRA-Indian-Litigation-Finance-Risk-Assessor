@@ -14,6 +14,7 @@ from pathlib import Path
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_absolute_error, r2_score, roc_auc_score, classification_report
 from sklearn.ensemble import GradientBoostingRegressor, GradientBoostingClassifier
+import json
 
 try:
     import lightgbm as lgb
@@ -28,35 +29,69 @@ MODELS_DIR.mkdir(parents=True, exist_ok=True)
 
 from src.feature_engineering import get_feature_cols, get_ibc_feature_cols
 
-SKL_BASE = dict(n_estimators=200, learning_rate=0.05, max_depth=5, subsample=0.8, random_state=42)
-LGB_BASE = dict(n_estimators=300, learning_rate=0.05, num_leaves=63, min_child_samples=20,
-                subsample=0.8, colsample_bytree=0.8, random_state=42, n_jobs=-1)
+# Hardcoded values : 
+# SKL_BASE = dict(n_estimators=200, learning_rate=0.05, max_depth=5, subsample=0.8, random_state=42)
+# LGB_BASE = dict(n_estimators=300, learning_rate=0.05, num_leaves=63, min_child_samples=20,
+#                 subsample=0.8, colsample_bytree=0.8, random_state=42, n_jobs=-1)
+
+def _load_best_params(model_name: str) -> dict:
+    """
+    Loads tuned hyperparameters from best_params.json.
+    Falls back to sensible defaults if tune.py hasn't been run yet,
+    so train.py stays usable out of the box.
+    """
+    params_path = MODELS_DIR / "best_params.json"
+    defaults = dict(
+        n_estimators=300, learning_rate=0.05, num_leaves=63,
+        min_child_samples=20, subsample=0.8, colsample_bytree=0.8,
+        random_state=42, n_jobs=-1, verbose=-1,
+    )
+    if not params_path.exists():
+        print(f"[train] best_params.json not found — using defaults for {model_name}. "
+              "Run src/tune.py first for optimised parameters.")
+        return defaults
+    with open(params_path) as f:
+        all_params = json.load(f)
+    params = all_params.get(model_name, defaults)
+    params.update({"random_state": 42, "n_jobs": -1, "verbose": -1})
+    return params
 
 # ── Model Factories ───────────────────────────────────────────────────────────
+_SKL_FALLBACK = dict(
+    n_estimators=300,
+    learning_rate=0.05,
+    max_depth=5,
+    subsample=0.8,
+    random_state=42,
+)
 
-def make_reg(**kw):
-    """Factory for standard regressors (used for mean models: p50 duration & realisation)."""
+def make_reg(model_name: str = "duration", **kw):
     if USE_LGB:
         import lightgbm as lgb
-        return lgb.LGBMRegressor(**{**LGB_BASE, **kw})
-    return GradientBoostingRegressor(**{**SKL_BASE, **kw})
+        return lgb.LGBMRegressor(**{**_load_best_params(model_name), **kw})
+    from sklearn.ensemble import GradientBoostingRegressor
+    return GradientBoostingRegressor(**{**_SKL_FALLBACK, **kw})
 
-def make_cls():
-    """Factory for classifiers (used for binary outcome prediction)."""
+def make_cls(**kw):
     if USE_LGB:
         import lightgbm as lgb
-        return lgb.LGBMClassifier(**LGB_BASE)
-    return GradientBoostingClassifier(**SKL_BASE)
+        return lgb.LGBMClassifier(**{**_load_best_params("outcome"), **kw})
+    from sklearn.ensemble import GradientBoostingClassifier
+    return GradientBoostingClassifier(**{**_SKL_FALLBACK, **kw})
 
-def make_quantile(alpha):
+def make_quantile(alpha: float, model_name: str = "duration"):
     """
     Factory for quantile regressors using Pinball Loss.
-    Used to generate probabilistic bounds (e.g. 10th and 90th percentiles) for risk scoring.
+    model_name tells _load_best_params which tuned params to pull
+    — pass "realisation" when building the realisation quantile models.
     """
     if USE_LGB:
         import lightgbm as lgb
-        return lgb.LGBMRegressor(objective="quantile", alpha=alpha, **LGB_BASE)
-    return GradientBoostingRegressor(loss="quantile", alpha=alpha, **SKL_BASE)
+        return lgb.LGBMRegressor(
+            **{**_load_best_params(model_name), "objective": "quantile", "alpha": alpha}
+        )
+    from sklearn.ensemble import GradientBoostingRegressor
+    return GradientBoostingRegressor(loss="quantile", alpha=alpha, **_SKL_FALLBACK)
 
 def fit(m, Xtr, ytr, Xte=None, yte=None):
     if USE_LGB and Xte is not None:
@@ -150,6 +185,10 @@ def main():
     for k,v in m.items(): print(f"  {k:15s}: {v}")
     pd.DataFrame(m).T.to_csv(MODELS_DIR / "training_metrics.csv")
     print(f"\n[train] Models saved to {MODELS_DIR}")
+    from src.calibration import calibrate_outcome_model
+    print("\n[train] Calibrating outcome model probabilities...")
+    calibrate_outcome_model()
 
 if __name__ == "__main__":
     main()
+    

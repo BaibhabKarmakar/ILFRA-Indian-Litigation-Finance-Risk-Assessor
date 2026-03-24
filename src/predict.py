@@ -32,7 +32,7 @@ def load_models():
         "duration": _load("duration_model.pkl"),
         "duration_q10": _load("duration_q10.pkl"),
         "duration_q90": _load("duration_q90.pkl"),
-        "outcome": _load("outcome_model.pkl"),
+        "outcome": _load("outcome_calibrated.pkl") if (MODELS_DIR / "outcome_calibrated.pkl").exists() else _load("outcome_model.pkl"),
         "realisation": _load("realisation_model.pkl"),
         "realisation_q10": _load("realisation_q10.pkl"),
         "realisation_q90": _load("realisation_q90.pkl"),
