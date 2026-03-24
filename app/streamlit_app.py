@@ -319,11 +319,47 @@ with tab2:
                               plot_bgcolor="rgba(0,0,0,0)")
             st.plotly_chart(fig, use_container_width=True)
 
+        # ── Calibration reliability diagram ───────────────────────────────
+        # Replace the single cal_path check with:
+        raw_path = MODELS_DIR / "calibration_curve_raw.csv"
+        cal_path = MODELS_DIR / "calibration_curve_cal.csv"
+
+        if raw_path.exists() and cal_path.exists():
+            st.divider()
+            st.subheader("Outcome Model — Calibration Reliability Diagram")
+            raw_df = pd.read_csv(raw_path)
+            cal_df = pd.read_csv(cal_path)
+
+            fig_cal = go.Figure()
+            fig_cal.add_trace(go.Scatter(
+                x=[0, 1], y=[0, 1],
+                mode="lines", name="Perfect calibration",
+                line=dict(dash="dash", color="gray", width=1)
+            ))
+            fig_cal.add_trace(go.Scatter(
+                x=raw_df["mean_predicted"], y=raw_df["fraction_positive"],
+                mode="lines+markers", name="Before calibration",
+                line=dict(color="#E24B4A")
+            ))
+            fig_cal.add_trace(go.Scatter(
+                x=cal_df["mean_predicted"], y=cal_df["fraction_positive"],
+                mode="lines+markers", name="After calibration",
+                line=dict(color="#1D9E75")
+            ))
+            fig_cal.update_layout(
+                xaxis_title="Mean predicted probability",
+                yaxis_title="Fraction of positive outcomes",
+                height=380, plot_bgcolor="rgba(0,0,0,0)"
+            )
+            st.plotly_chart(fig_cal, use_container_width=True)
+            st.caption(
+                "A perfectly calibrated model follows the dashed diagonal. "
+                "Points above = model underestimates; below = overestimates."
+            )
+
     except Exception:
         st.info("Train the models first to see feature importance charts here.\n\n"
                 "Run: `python src/train.py`")
-
-
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 3 — How It Works
 # ══════════════════════════════════════════════════════════════════════════════
