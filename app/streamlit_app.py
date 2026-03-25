@@ -10,6 +10,7 @@ Run with:
 import sys
 import os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+from src.report_generator import generate_assessment_report
 
 import streamlit as st
 import pandas as pd
@@ -195,8 +196,8 @@ with tab1:
 
             # KPI cards
             k1, k2, k3, k4 = st.columns(4)
-            dur = result["duration"]
-            p_fav = result["p_favourable"]
+            dur = {"p10": result["duration_low"], "p50": result["duration_months"], "p90": result["duration_high"]}
+            p_fav = result["outcome_prob"]
             risk = result["risk_score"]
 
             with k1:
@@ -206,10 +207,9 @@ with tab1:
                 st.metric("P(Favourable Outcome)", f"{p_fav*100:.1f}%",
                           "Higher is better for claimant")
             with k3:
-                rl = result.get("realisation")
-                if rl:
-                    st.metric("Expected Recovery", f"{rl['p50']:.1f}%",
-                              f"Range: {rl['p10']:.1f}–{rl['p90']:.1f}%")
+                if result["realisation_pct"] > 0:
+                    st.metric("Expected Recovery", f"{result['realisation_pct']:.1f}%",
+                              f"Range: {result['realisation_low']:.1f}–{result['realisation_high']:.1f}%")
                 else:
                     st.metric("Recovery Model", "N/A (non-monetary)")
             with k4:
@@ -262,24 +262,35 @@ with tab1:
                 st.plotly_chart(fig2, use_container_width=True)
 
             # Realisation chart (if applicable)
-            if result.get("realisation"):
-                rl = result["realisation"]
+            if result["realisation_pct"] > 0:
                 st.subheader("💰 Recovery / Realisation Range")
                 fig3 = go.Figure()
                 fig3.add_trace(go.Bar(
                     x=["P10 (Pessimistic)", "P50 (Median)", "P90 (Optimistic)"],
-                    y=[rl["p10"], rl["p50"], rl["p90"]],
+                    y=[result["realisation_low"], result["realisation_pct"], result["realisation_high"]],
                     marker_color=["#e74c3c", "#3498db", "#2ecc71"],
-                    text=[f"{v:.1f}%" for v in [rl["p10"], rl["p50"], rl["p90"]]],
+                    text=[f"{v:.1f}%" for v in [result["realisation_low"], result["realisation_pct"], result["realisation_high"]]],
                     textposition="outside",
                 ))
                 fig3.update_layout(yaxis_title="Recovery %", yaxis_range=[0, 105],
-                                   height=300, plot_bgcolor="rgba(0,0,0,0)")
+                    height=300, plot_bgcolor="rgba(0,0,0,0)")
                 st.plotly_chart(fig3, use_container_width=True)
 
             # Raw output expander
             with st.expander("🔎 Raw Model Output (JSON)"):
                 st.json(result)
+
+            # PDF report download
+            pdf_bytes = generate_assessment_report(
+                case_inputs=case_input,
+                predictions=result,
+            )
+            st.download_button(
+                label="📄 Download Assessment Report (PDF)",
+                data=pdf_bytes,
+                file_name=f"ILFRA_Assessment_{case_type.replace(' ', '_')}.pdf",
+                mime="application/pdf",
+            )
 
         except FileNotFoundError as e:
             st.error(f"Models not found. Please run the training pipeline first.\n\n`{e}`")
