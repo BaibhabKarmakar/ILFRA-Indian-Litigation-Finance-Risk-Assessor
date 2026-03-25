@@ -32,7 +32,7 @@ def load_models():
         "duration": _load("duration_model.pkl"),
         "duration_q10": _load("duration_q10.pkl"),
         "duration_q90": _load("duration_q90.pkl"),
-        "outcome": _load("outcome_calibrated.pkl") if (MODELS_DIR / "outcome_calibrated.pkl").exists() else _load("outcome_model.pkl"),
+        "outcome": _load("outcome_model.pkl"),
         "realisation": _load("realisation_model.pkl"),
         "realisation_q10": _load("realisation_q10.pkl"),
         "realisation_q90": _load("realisation_q90.pkl"),
@@ -199,15 +199,17 @@ def predict_case(case: dict, models: dict) -> dict:
     )
 
     return {
-        "duration": {
-            "p10": round(max(1, dur_p10), 1),
-            "p50": round(max(1, dur_p50), 1),
-            "p90": round(max(1, dur_p90), 1),
-        },
-        "p_favourable": round(p_favour, 3),
-        "realisation": realisation,
-        "risk_score": risk_score,
-        "recommendation": _recommendation(p_favour, dur_p50, realisation),
+        "duration_months":  round(max(1, dur_p50), 1),
+        "duration_low":     round(max(1, dur_p10), 1),
+        "duration_high":    round(max(1, dur_p90), 1),
+        "outcome_prob":     round(p_favour, 3),
+        "outcome_label":    "Favourable" if p_favour >= 0.5 else "Unfavourable",
+        "realisation_pct":  round(realisation["p50"], 1) if realisation else 0.0,
+        "realisation_low":  round(realisation["p10"], 1) if realisation else 0.0,
+        "realisation_high": round(realisation["p90"], 1) if realisation else 0.0,
+        "risk_score":       risk_score,
+        "recommendation":   _recommendation(p_favour, dur_p50, realisation),
+        "data_source":      "IBC" if (is_ibc or is_money) else "NJDG",
     }
 
 
