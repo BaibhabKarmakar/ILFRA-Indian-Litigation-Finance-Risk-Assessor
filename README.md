@@ -21,6 +21,10 @@ The project is structured into the following key modules:
 
 - **`src/data_ingestion.py`** — Fetches raw data from NJDG, IBBI, and eCourts, or synthesises realistic mock data (~5,000 records) to emulate civil and commercial litigations in India for development and testing.
 - **`src/feature_engineering.py`** — Transforms raw data into numerical and categorical features suitable for ML modelling, with separate pipelines for NJDG and IBC data.
+- **`src/ingestion/ibbi_channel.py`** — Orchestrates the full IBBI real data ingestion pipeline. Scans the source folder, routes each file to the correct parser, deduplicates across quarters, derives features, validates, and saves `data/raw/ibbi_real.csv`.
+- **`src/parsers/ibbi_excel.py`** — Parses IBBI quarterly newsletter `.xlsx` files. Extracts Table 8/5/9 (Resolution Plans) and Table 14/11/10/9/15 (Closed Liquidations), handling IBBI's inconsistent table numbering across quarterly releases via content-based sheet detection.
+- **`src/parsers/ibbi_pdf.py`** — Parses IBBI quarterly newsletter `.pdf` files using `pdfplumber`, handling multi-page tables with repeated headers.
+- **`src/genai/genai_utils.py`** — Deterministic utility functions for column name mapping (fuzzy string matching via `rapidfuzz`) and company name normalisation (regex-based). Replaced a planned LLM-based approach with a free, deterministic alternative.
 - **`src/tune.py`** — Runs Optuna-based hyperparameter search with 5-fold cross-validation across all three model families. Outputs `models/best_params.json` consumed by `train.py`.
 - **`src/train.py`** — Trains three model families sequentially using tuned hyperparameters: LightGBM Regressor (Duration), LightGBM Classifier (Outcome), and LightGBM Regressor (Realisation). Automatically triggers calibration on completion.
 - **`src/calibration.py`** — Wraps the trained outcome classifier with isotonic regression calibration so that predicted probabilities are statistically reliable. Outputs `models/outcome_calibrated.pkl` and calibration curve CSVs.
@@ -28,6 +32,7 @@ The project is structured into the following key modules:
 - **`src/cbr_engine.py`** — Core CBR retrieval and adaptation engine. Computes weighted cosine similarity between a new case query and every historical case, retrieves the K most similar, and derives similarity-weighted outcome estimates.
 - **`src/cbr_explainer.py`** — Converts retrieved precedents into natural language summaries and a blended ML + CBR interpretation for display in the Streamlit UI.
 - **`app/streamlit_app.py`** — The Streamlit frontend. Processes user inputs and outputs a full risk assessment dashboard including ML predictions, a calibration reliability diagram, and a Similar Precedents panel.
+- **`check_ibbi_files.py`** — Maintenance utility. Run before adding new quarterly IBBI files to verify that the parser can locate the resolution and liquidation tables correctly, and flag any files that need attention before the pipeline is run.
 
 ---
 
@@ -113,6 +118,18 @@ Raw euclidean distance on mixed features is misleading because features like cou
 
 ML models produce a number. CBR produces an explanation. A litigation funder evaluating a ₹50Cr commercial dispute can point to five specific precedent cases from the same court and case type that resolved in a comparable timeframe — that is auditable, defensible, and legally meaningful in a way that a gradient boosting score alone is not. When ML and CBR estimates agree, that convergence is a strong confidence signal. When they diverge, it flags genuine uncertainty that a single model score would have hidden entirely.
 
+### Real IBBI Data Pipeline
+
+ILFRA now ingests real IBBI quarterly newsletter Excel files directly from `data/raw/ibbi/` instead of relying solely on synthetic data. The pipeline currently processes **1,332 real CIRP cases** spanning 12 quarters (Q1 2023 – Q4 2025), covering 702 resolution and 630 liquidation outcomes with an average creditor realisation of 20.7% — consistent with IBBI's own published aggregate figures.
+
+**Key design decisions:**
+
+- **Content-based sheet detection** — IBBI renumbers its tables almost every quarter (the resolution data has appeared in Table 5, Table 8, and Table 9 across different releases; liquidation data in Table 9, 10, 11, 14, and 15). Rather than maintaining a hardcoded table number map, the parser scans every sheet's title row for domain-specific keywords ("cirps yielding", "closed liquidations") and selects the correct sheet regardless of its number.
+- **Plugin architecture** — `ibbi_channel.py` is a format-agnostic orchestrator. Adding support for a new file format in the future requires only creating a new parser file and registering its extension in the `PARSERS` dict — no other file changes.
+- **Deterministic column mapping** — Column names vary across quarterly releases (e.g., "Total Admitted Claims" vs "Amount of Claims Admitted"). Fuzzy string matching via `rapidfuzz` maps raw headers to a canonical internal vocabulary without any API calls or LLM dependency.
+- **String date handling** — Newer IBBI files store dates as DD.MM.YYYY strings rather than datetime objects. The pipeline detects and parses both formats, with a sanity check that drops any dates before 2016 (when IBC was enacted).
+- **Quarterly deduplication** — Each quarterly file includes a "Part A: Prior Period" section repeating cases from earlier quarters. The pipeline deduplicates on `company_name + cirp_start_date`, keeping the most recent record.
+
 ---
 
 ## How to Run the Tool
@@ -125,7 +142,23 @@ Follow these steps sequentially inside the project directory.
 pip install -r requirements.txt
 ```
 
-### 2. Generate Raw Data
+### 2. Ingest Real IBBI Data *(if you have quarterly files)*
+
+Place IBBI quarterly `.xlsx` files into `data/raw/ibbi/`, then run the checker to verify all files are parseable:
+
+```bash
+python check_ibbi_files.py
+```
+
+If the checker passes, run the ingestion pipeline:
+
+```bash
+python src/ingestion/ibbi_channel.py
+```
+
+This produces `data/raw/ibbi_real.csv` with cleaned, deduplicated, feature-enriched CIRP case data.
+
+### 3. Generate Synthetic Data *(if no real files available)*
 
 Generates `data/raw/` CSV files used as the training dataset:
 
@@ -133,7 +166,7 @@ Generates `data/raw/` CSV files used as the training dataset:
 python src/data_ingestion.py
 ```
 
-### 3. Engineer Features
+### 4. Engineer Features
 
 Transforms raw datasets into ML-ready feature matrices:
 
@@ -141,7 +174,7 @@ Transforms raw datasets into ML-ready feature matrices:
 python src/feature_engineering.py
 ```
 
-### 4. Build the CBR Case Base
+### 5. Build the CBR Case Base
 
 Serialises the processed feature data into the searchable case base used by the CBR engine at inference time. Only needs to be re-run if the underlying processed data changes:
 
@@ -149,7 +182,7 @@ Serialises the processed feature data into the searchable case base used by the 
 python src/cbr_case_base.py
 ```
 
-### 5. Tune Hyperparameters *(recommended, ~5–10 min)*
+### 6. Tune Hyperparameters *(recommended, ~5–10 min)*
 
 Runs Optuna search with 5-fold CV and saves best parameters to `models/best_params.json`:
 
@@ -159,7 +192,7 @@ python src/tune.py
 
 > This step is optional but strongly recommended before training on real data. If skipped, `train.py` uses built-in defaults.
 
-### 6. Train the ML Models
+### 7. Train the ML Models
 
 Trains all three model families using tuned parameters and runs calibration automatically on completion:
 
@@ -179,7 +212,7 @@ cbr_case_base.pkl
 *_feature_importance.csv
 ```
 
-### 7. Launch the Streamlit App
+### 8. Launch the Streamlit App
 
 ```bash
 streamlit run app/streamlit_app.py
@@ -189,15 +222,27 @@ The dashboard opens at `http://localhost:8501`. Navigate through the **Case Asse
 
 ---
 
+## Adding New IBBI Quarterly Files
+
+When IBBI releases a new quarterly newsletter:
+
+1. Download the `.xlsx` file and place it in `data/raw/ibbi/`
+2. Run `python check_ibbi_files.py` — it will confirm whether the parser can locate the correct sheets, or flag which file needs attention
+3. If a file is flagged, open `debug_xlsx.py`, point it at the new file, and identify which table number IBBI used for resolution and liquidation data in that release
+4. Add the new table number to `_find_sheet_by_content` keywords in `src/parsers/ibbi_excel.py`
+5. Re-run the full pipeline from Step 2 above
+
+---
+
 ## Data Sources
 
 | Source | Portal | Used for |
 |---|---|---|
 | NJDG | `njdg.ecourts.gov.in` | Duration and outcome models, NJDG CBR case base |
-| IBBI CIRP | `ibbi.gov.in` | Realisation model, IBC CBR case base |
+| IBBI CIRP | `ibbi.gov.in` | Realisation model, IBC CBR case base (1,332 real cases) |
 | eCourts | `ecourts.gov.in` | Judgment outcome labels |
 
-> When real government exports are not available, the pipeline automatically falls back to synthetic data generators that mirror real-world Indian litigation distributions.
+> When real IBBI government exports are not available, the pipeline automatically falls back to synthetic data generators that mirror real-world Indian litigation distributions.
 
 ---
 

@@ -23,24 +23,46 @@ from src.genai.genai_utils import detect_columns
 
 def _is_data_row(row: tuple) -> bool:
     """
-    A real data row has an integer serial number in column index 1.
-    This cleanly skips title rows, header rows, Part A/B label rows,
-    and empty rows — all of which have None or a string in that position.
+    A real data row has a serial number (integer or float) in
+    column index 0 or 1. Handles format variations across quarters.
     """
-    return isinstance(row[1], int)
+    for col_idx in [0, 1, 2]:
+        val = row[col_idx] if len(row) > col_idx else None
+        if val is None:
+            continue
+        # Accept int, float that is whole number, or string digit
+        if isinstance(val, int):
+            return True
+        if isinstance(val, float) and val == int(val):
+            return True
+        if isinstance(val, str) and val.strip().isdigit():
+            return True
+    return False
 
 
-def _find_table_sheet(wb, keywords: list[str]) -> str | None:
+def _find_table_sheet(wb, keywords: list[str], content_keywords: list[str] = None) -> str | None:
     """
-    Finds a sheet whose name contains any of the given keywords.
-    Handles cases where IBBI renames sheets slightly across quarters
-    e.g. 'Table 8' vs 'Table8' vs 'Tbl 8'.
-    Returns the sheet name or None if not found.
+    Finds a sheet whose name contains any of the given keywords AND
+    optionally whose content contains content_keywords in the title row.
+    Checks keywords in order — first match with valid content wins.
     """
-    for name in wb.sheetnames:
-        normalised = name.strip().lower().replace(" ", "")
-        for kw in keywords:
-            if kw.lower().replace(" ", "") in normalised:
+    for kw in keywords:
+        for name in wb.sheetnames:
+            normalised_name = name.strip().lower().replace(" ", "")
+            if kw.lower().replace(" ", "") in normalised_name:
+                # If content validation required, check the sheet title row
+                if content_keywords:
+                    ws = wb[name]
+                    sheet_text = ""
+                    for i, row in enumerate(ws.iter_rows(values_only=True)):
+                        if i > 5:
+                            break
+                        for cell in row:
+                            if isinstance(cell, str):
+                                sheet_text += cell.lower()
+                    # Sheet must contain at least one content keyword
+                    if not any(ck.lower() in sheet_text for ck in content_keywords):
+                        continue   # wrong sheet — keep searching
                 return name
     return None
 
@@ -77,31 +99,43 @@ def _get_col_index(ws, table_name: str) -> dict[str, int]:
     return col_index
 
 
+def _find_sheet_by_content(wb, content_keywords: list[str]) -> str | None:
+    """
+    Scans ALL sheets and returns the first one whose title row
+    contains any of the content_keywords. Completely ignores sheet names.
+    Use this when IBBI keeps renumbering tables across quarters.
+    """
+    for sheet_name in wb.sheetnames:
+        ws = wb[sheet_name]
+        for i, row in enumerate(ws.iter_rows(values_only=True)):
+            if i > 5:
+                break
+            row_text = " ".join(str(c).lower() for c in row if c is not None)
+            if any(kw.lower() in row_text for kw in content_keywords):
+                return sheet_name
+    return None
+
 # ── Table 8: Resolution Plans ─────────────────────────────────────────────────
 
 def _parse_table8(wb, quarter_label: str) -> pd.DataFrame:
-    """
-    Extracts individual CIRP cases that ended with an approved
-    resolution plan. These are the cases with meaningful realisation %.
-
-    Raw columns from the Excel:
-        col 2  — company name
-        col 4  — CIRP commencement date
-        col 5  — resolution plan approval date
-        col 6  — initiated by (FC / OC / CD)
-        col 7  — total admitted claims (₹ crore)
-        col 8  — liquidation value (₹ crore)
-        col 9  — fair value (₹ crore)
-        col 10 — total realisable amount by claimants (₹ crore)
-        col 11 — realisable as % of admitted claims (pre-calculated)
-        col 12 — realisable as % of liquidation value
-        col 13 — realisable as % of fair value
-    """
-    sheet_name = _find_table_sheet(wb, ["Table 8", "Table8", "Resolution Plan"])
+    # "cirps yielding" is specific enough to only match the main resolution table
+    # Avoid "resolution plans" alone — it matches FiSP tables too
+    sheet_name = _find_sheet_by_content(wb, [
+        "cirps yielding resolution",
+        "cirps yielding",
+    ])
     if not sheet_name:
-        print(f"  [ibbi_excel] Table 8 not found in {quarter_label} — skipping.")
+        # Fallback to name-based search
+        sheet_name = _find_table_sheet(
+            wb,
+            ["Table 8", "Table8", "Table 9", "Table9",
+             "Table 5", "Table5", "Resolution Plan"],
+            content_keywords=["resolution plan", "cirps yielding"]
+        )
+    if not sheet_name:
+        print(f"  [ibbi_excel] Resolution table not found in {quarter_label} — skipping.")
         return pd.DataFrame()
-
+    
     ws = wb[sheet_name]
     rows = []
 
@@ -109,12 +143,15 @@ def _parse_table8(wb, quarter_label: str) -> pd.DataFrame:
         if not _is_data_row(row):
             continue
 
-        admitted   = row[7]
-        realisable = row[10]
-        real_pct   = row[11]
+        company    = row[2]
+        start_date = row[4]
+        res_date   = row[5]
+        admitted   = row[7]  if len(row) > 7  else None
+        liq_val    = row[8]  if len(row) > 8  else None
+        fair_val   = row[9]  if len(row) > 9  else None
+        realisable = row[10] if len(row) > 10 else None
+        real_pct   = row[11] if len(row) > 11 else None
 
-        # Skip rows where financial fields are dashes or None
-        # (some cases report '-' when data is not yet available)
         if not isinstance(admitted, (int, float)):
             continue
         if not isinstance(realisable, (int, float)):
@@ -123,7 +160,6 @@ def _parse_table8(wb, quarter_label: str) -> pd.DataFrame:
         admitted   = float(admitted)
         realisable = float(realisable)
 
-        # Use pre-calculated % if available, otherwise compute it
         if isinstance(real_pct, (int, float)):
             realisation_pct = float(real_pct)
         elif admitted > 0:
@@ -132,67 +168,82 @@ def _parse_table8(wb, quarter_label: str) -> pd.DataFrame:
             realisation_pct = np.nan
 
         rows.append({
-            "company_name":      str(row[2]).strip() if row[2] else None,
-            "cirp_start_date":   row[4],
-            "resolution_date":   row[5],
-            "cirp_initiated_by": str(row[6]).strip() if row[6] else None,
+            "company_name":      str(company).strip() if company else None,
+            "cirp_start_date":   start_date,
+            "resolution_date":   res_date,
+            "cirp_initiated_by": str(row[6]).strip() if len(row) > 6 and row[6] else None,
             "admitted_claim_cr": admitted,
-            "liquidation_value": float(row[8]) if isinstance(row[8], (int, float)) else np.nan,
-            "fair_value":        float(row[9]) if isinstance(row[9], (int, float)) else np.nan,
+            "liquidation_value": float(liq_val) if isinstance(liq_val, (int, float)) else np.nan,
+            "fair_value":        float(fair_val) if isinstance(fair_val, (int, float)) else np.nan,
             "realisable_amount": realisable,
             "realisation_pct":   realisation_pct,
             "resolution_status": "Resolution Plan Approved",
-            "source_table":      "Table 8",
+            "source_table":      sheet_name,
             "quarter":           quarter_label,
         })
 
     return pd.DataFrame(rows)
 
 
-# ── Table 14: Closed Liquidations ─────────────────────────────────────────────
-
 def _parse_table14(wb, quarter_label: str) -> pd.DataFrame:
-    """
-    Extracts individual CIRP cases that ended in liquidation and
-    have been formally closed (dissolution order passed).
-
-    Raw columns from the Excel:
-        col 2  — company name
-        col 3  — date of liquidation order
-        col 4  — admitted claims (₹ crore)
-        col 5  — liquidation value (₹ crore)
-        col 6  — sale proceeds (₹ crore)
-        col 7  — amount distributed to stakeholders (₹ crore)
-        col 8  — date of dissolution / closure order
-
-    Note: realisation % is not pre-calculated in Table 14,
-    so we compute it as distributed / admitted * 100.
-    """
-    sheet_name = _find_table_sheet(wb, ["Table 14", "Table14", "Closed Liquidation"])
+    sheet_name = _find_sheet_by_content(wb, [
+        "details of closed liquidation",
+        "closed liquidations",
+    ])
     if not sheet_name:
-        print(f"  [ibbi_excel] Table 14 not found in {quarter_label} — skipping.")
+        sheet_name = _find_table_sheet(
+            wb,
+            ["Table 14", "Table14", "Table 15", "Table15",
+             "Table 11", "Table11", "Table 10", "Table10",
+             "Table 9",  "Table9",  "Closed Liquidation"],
+            content_keywords=["closed liquidation", "dissolution"]
+        )
+    if not sheet_name:
+        print(f"  [ibbi_excel] Liquidation table not found in {quarter_label} — skipping.")
         return pd.DataFrame()
 
     ws = wb[sheet_name]
-    col = _get_col_index(ws, "Table 8")
-
-    # Fall back to hardcoded positions if GenAI mapping failed
-    admitted_idx   = col.get("admitted_claim_cr",   7)
-    realisable_idx = col.get("realisation_cr",      10)
-    real_pct_idx   = col.get("realisation_pct",     11)
-    company_idx    = col.get("company_name",         2)
-    start_idx      = col.get("admission_date",       4)
-    res_date_idx   = col.get("resolution_date",      5)  # approximate — not in canonical but close
-    initiated_idx  = col.get("initiated_by",         6)
-    liq_val_idx    = col.get("liquidation_value_cr", 8)
-    fair_val_idx   = col.get("fair_value_cr",        9)
-
     rows = []
+
     for row in ws.iter_rows(values_only=True):
         if not _is_data_row(row):
             continue
-        # ... rest of the existing extraction logic, replacing row[7] with row[admitted_idx] etc.
 
+        company     = row[2]
+        liq_date    = row[3]
+        admitted    = row[4]
+        liq_val     = row[5]
+        distributed = row[7] if len(row) > 7 else None
+        dissolution = row[8] if len(row) > 8 else None
+
+        if not isinstance(admitted, (int, float)):
+            continue
+
+        admitted = float(admitted)
+
+        if isinstance(distributed, (int, float)):
+            distributed     = float(distributed)
+            realisation_pct = round(distributed / admitted * 100, 2) if admitted > 0 else np.nan
+        else:
+            distributed     = np.nan
+            realisation_pct = np.nan
+
+        rows.append({
+            "company_name":      str(company).strip() if company else None,
+            "cirp_start_date":   liq_date,
+            "resolution_date":   dissolution,
+            "cirp_initiated_by": None,
+            "admitted_claim_cr": admitted,
+            "liquidation_value": float(liq_val) if isinstance(liq_val, (int, float)) else np.nan,
+            "fair_value":        np.nan,
+            "realisable_amount": distributed,
+            "realisation_pct":   realisation_pct,
+            "resolution_status": "Liquidation Order",
+            "source_table":      sheet_name,
+            "quarter":           quarter_label,
+        })
+
+    return pd.DataFrame(rows)
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
