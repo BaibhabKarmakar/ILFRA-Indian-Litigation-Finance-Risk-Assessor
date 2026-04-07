@@ -9,9 +9,26 @@ import numpy as np
 import pandas as pd
 import joblib
 from pathlib import Path
+from src.cbr_engine import get_engine
+from src.feature_engineering import get_feature_cols, get_ibc_feature_cols
+from src.cbr_explainer import summarise_precedents, blend_summary
 
 MODELS_DIR = Path(__file__).parent.parent / "models"
 
+def _run_cbr(case: dict, query_njdg: np.ndarray, query_ibc: np.ndarray,
+             fc_njdg: list, fc_ibc: list, k: int = 5) -> dict:
+    """Runs CBR retrieval and adaptation for a case query."""
+    engine = get_engine()
+    case_type = case.get("case_type", "")
+    is_ibc = "IBC" in case_type or "Insolvency" in case_type
+
+    if is_ibc and query_ibc is not None:
+        similar = engine.retrieve_ibc(query_ibc, fc_ibc, k=k)
+    else:
+        similar = engine.retrieve_njdg(query_njdg, fc_njdg, k=k)
+
+    adapted = engine.adapt(similar)
+    return {"similar_cases": similar, "adapted": adapted}
 
 def _load(name: str):
     """Internal helper to load a pickled model or encoder from the models directory."""
@@ -198,6 +215,31 @@ def predict_case(case: dict, models: dict) -> dict:
         1,
     )
 
+    try:
+        fc_njdg = get_feature_cols()
+        fc_ibc  = get_ibc_feature_cols()
+
+        # Convert DataFrames to numpy arrays for the CBR engine
+        X_njdg_arr = X[fc_njdg].fillna(0).values.astype(np.float32)[0]
+
+        # X_ibc only exists if this is an IBC/money recovery case
+        X_ibc_arr = X_ibc[fc_ibc].fillna(0).values.astype(np.float32)[0] \
+                    if (is_ibc or is_money) else None
+
+        engine = get_engine()
+
+        if is_ibc or is_money:
+            similar_cases = engine.retrieve_ibc(X_ibc_arr, fc_ibc, k=5)
+        else:
+            similar_cases = engine.retrieve_njdg(X_njdg_arr, fc_njdg, k=5)
+
+        adapted = engine.adapt(similar_cases)
+        cbr_result = {"similar_cases": similar_cases, "adapted": adapted}
+
+    except Exception as e:
+        # CBR failure must never crash the main prediction
+        cbr_result = {"similar_cases": [], "adapted": {}, "error": str(e)}
+    
     return {
         "duration_months":  round(max(1, dur_p50), 1),
         "duration_low":     round(max(1, dur_p10), 1),
@@ -210,6 +252,7 @@ def predict_case(case: dict, models: dict) -> dict:
         "risk_score":       risk_score,
         "recommendation":   _recommendation(p_favour, dur_p50, realisation),
         "data_source":      "IBC" if (is_ibc or is_money) else "NJDG",
+        "cbr":              cbr_result,
     }
 
 

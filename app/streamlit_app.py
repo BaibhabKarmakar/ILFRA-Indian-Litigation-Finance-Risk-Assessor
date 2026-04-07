@@ -19,6 +19,7 @@ import plotly.graph_objects as go
 import plotly.express as px
 from pathlib import Path
 from datetime import date
+from src.cbr_explainer import summarise_precedents, blend_summary
 
 # ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -219,6 +220,30 @@ with tab1:
 
             st.divider()
             col_a, col_b = st.columns(2)
+
+            if "cbr" in result and result["cbr"]["similar_cases"]:
+                st.divider()
+                st.subheader("Similar Precedents")
+
+                # Blend commentary
+                blend = blend_summary(result, result["cbr"]["adapted"])
+                if blend:
+                    st.info(blend)
+
+                # Natural language summary
+                mode = "ibc" if "IBC" in case_input.get("case_type","") else "njdg"
+                st.markdown(summarise_precedents(result["cbr"]["similar_cases"], mode=mode))
+
+                # Detailed precedent cards
+                with st.expander("View individual precedent cases"):
+                    for c in result["cbr"]["similar_cases"]:
+                        col1, col2, col3, col4 = st.columns(4)
+                        col1.metric("Similarity",    f"{c.similarity:.0%}")
+                        col2.metric("Duration",      f"{c.duration_months:.0f} mo" if c.duration_months else "—")
+                        col3.metric("Outcome",       "Favourable" if c.favourable == 1 else "Unfavourable" if c.favourable == 0 else "—")
+                        col4.metric("Recovery",      f"{c.realisation_pct:.1f}%" if c.realisation_pct else "—")
+                        st.caption(f"Case ID: {c.case_id}  |  Court: {c.court or '—'}  |  Type: {c.case_type or '—'}  |  Filed: {c.filing_year or '—'}")
+                        st.divider()
 
             # Duration confidence chart
             with col_a:

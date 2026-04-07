@@ -33,7 +33,7 @@ import numpy as np
 import pandas as pd
 from pathlib import Path
 
-from src.ingestion.parsers import ibbi_excel, ibbi_pdf
+from src.parsers import ibbi_excel, ibbi_pdf
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
@@ -171,25 +171,43 @@ def _deduplicate(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _derive_features(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Derives additional ML-ready features from raw extracted columns.
-    All new columns are appended — original columns are preserved.
-    """
     df = df.copy()
 
-    # Parse dates
-    df["cirp_start_date"] = pd.to_datetime(df["cirp_start_date"], errors="coerce")
-    df["resolution_date"] = pd.to_datetime(df["resolution_date"],  errors="coerce")
+    # Parse dates — handle both datetime objects and DD.MM.YYYY strings
+    for col in ["cirp_start_date", "resolution_date"]:
+        if col not in df.columns:
+            continue
+        # First try standard parsing
+        parsed = pd.to_datetime(df[col], errors="coerce", dayfirst=True)
+        
+        # For rows that failed, try DD.MM.YYYY format explicitly
+        failed_mask = parsed.isna() & df[col].notna()
+        if failed_mask.any():
+            parsed[failed_mask] = pd.to_datetime(
+                df.loc[failed_mask, col],
+                format="%d.%m.%Y",
+                errors="coerce"
+            )
+        df[col] = parsed
+
+    # Sanity check — drop obviously wrong dates (before IBC was enacted in 2016)
+    if "cirp_start_date" in df.columns:
+        df = df[
+            df["cirp_start_date"].isna() |
+            (df["cirp_start_date"].dt.year >= 2016)
+        ]
 
     # Duration
-    df["duration_days"] = (df["resolution_date"] - df["cirp_start_date"]).dt.days
+    df["duration_days"] = (
+        df["resolution_date"] - df["cirp_start_date"]
+    ).dt.days
 
-    # Outcome flag — 1 = resolution (good for creditors), 0 = liquidation
+    # Outcome flag
     df["favourable_outcome"] = (
         df["resolution_status"] == "Resolution Plan Approved"
     ).astype(int)
 
-    # Log-scale claim amount (spans several orders of magnitude)
+    # Log-scale claim
     df["log_admitted_claim"] = np.log1p(df["admitted_claim_cr"])
 
     # Admission year
@@ -199,17 +217,28 @@ def _derive_features(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _validate_and_clean(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Final quality checks before saving.
-        - Drops rows missing the three critical ML fields
-        - Clips realisation % to [0, 150] — anything above 150% is likely a data error
-        - Clips duration to positive values
-    """
     before = len(df)
 
+    # Only require admitted_claim_cr — the other two can be imputed
+    df = df.dropna(subset=["admitted_claim_cr"])
+    df = df[df["admitted_claim_cr"] > 0]
+
+    # Impute missing realisation_pct for liquidation cases as 0
+    # (dash entries mean nothing was distributed to creditors)
+    liq_mask = df["resolution_status"] == "Liquidation Order"
+    df.loc[liq_mask & df["realisation_pct"].isna(), "realisation_pct"] = 0.0
+
+    # Impute missing duration_days using median per resolution_status
+    # rather than dropping the row entirely
+    median_duration = df.groupby("resolution_status")["duration_days"].transform("median")
+    df["duration_days"] = df["duration_days"].fillna(median_duration)
+
+    # Clip realisation to valid range
+    df["realisation_pct"] = df["realisation_pct"].clip(0, 150)
+
+    # Drop only rows that are still missing critical fields after imputation
     df = df.dropna(subset=["admitted_claim_cr", "realisation_pct", "duration_days"])
     df = df[df["duration_days"] > 0]
-    df["realisation_pct"] = df["realisation_pct"].clip(0, 150)
 
     dropped = before - len(df)
     if dropped:
