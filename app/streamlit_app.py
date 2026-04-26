@@ -1,329 +1,334 @@
 """
-app/streamlit_app.py
---------------------
-Streamlit UI for the Litigation Finance Risk Assessor.
+app/streamlit_app.py — ILFRA Streamlit dashboard.
 
-Run with:
-    streamlit run app/streamlit_app.py
+Tab 1 — Case Assessment   : form, ML predictions, per-case SHAP waterfall,
+                             CBR similar precedents
+Tab 2 — Model Insights    : training metrics, SHAP global summary plots
+                             (replaces LightGBM feature importance),
+                             calibration reliability diagram
+Tab 3 — How It Works      : architecture overview and ethical guardrails
 """
 
-import sys
-import os
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-from src.report_generator import generate_assessment_report
+import sys, os
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-import streamlit as st
-import pandas as pd
 import numpy as np
+import pandas as pd
+import streamlit as st
 import plotly.graph_objects as go
 import plotly.express as px
 from pathlib import Path
-from datetime import date
-from src.cbr_explainer import summarise_precedents, blend_summary
 
-# ── Page config ───────────────────────────────────────────────────────────────
-st.set_page_config(
-    page_title="LitFin Risk Assessor — India",
-    page_icon="⚖️",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
+from src.predict import load_models, predict_case
 
 MODELS_DIR = Path(__file__).parent.parent / "models"
-PROCESSED_DIR = Path(__file__).parent.parent / "data" / "processed"
 
-# ── Lazy model loader (cached) ────────────────────────────────────────────────
+st.set_page_config(
+    page_title="ILFRA — Litigation Finance Risk Assessor",
+    page_icon="⚖️",
+    layout="wide",
+)
+
+
+# ── Model loading (cached) ────────────────────────────────────────────────────
+
 @st.cache_resource
-def load_models():
-    from src.predict import load_models as _load
-    return _load()
+def get_models():
+    return load_models()
 
 
-@st.cache_data
-def load_feature_importance():
-    files = {
-        "Duration": MODELS_DIR / "duration_feature_importance.csv",
-        "Outcome": MODELS_DIR / "outcome_feature_importance.csv",
-        "Realisation": MODELS_DIR / "realisation_feature_importance.csv",
-    }
-    return {
-        k: pd.read_csv(v, index_col=0) for k, v in files.items() if v.exists()
-    }
+# ── SHAP chart helpers ────────────────────────────────────────────────────────
+
+def _shap_waterfall_chart(shap_map: dict, title: str,
+                           top_n: int = 12) -> go.Figure:
+    """
+    Renders a horizontal bar chart of per-case SHAP values.
+    Positive values (red) push the prediction higher.
+    Negative values (blue) push the prediction lower.
+    Only the top_n features by absolute magnitude are shown.
+    """
+    items = sorted(shap_map.items(), key=lambda x: abs(x[1]), reverse=True)[:top_n]
+    features = [k for k, _ in items]
+    values   = [v for _, v in items]
+    colors   = ["#E24B4A" if v >= 0 else "#3B82F6" for v in values]
+
+    fig = go.Figure(go.Bar(
+        x=values,
+        y=features,
+        orientation="h",
+        marker_color=colors,
+        text=[f"{v:+.3f}" for v in values],
+        textposition="outside",
+    ))
+    fig.add_vline(x=0, line_width=1, line_color="gray")
+    fig.update_layout(
+        title=title,
+        xaxis_title="SHAP value (impact on model output)",
+        yaxis={"categoryorder": "total ascending"},
+        height=max(300, top_n * 32),
+        plot_bgcolor="rgba(0,0,0,0)",
+        margin=dict(l=10, r=60, t=40, b=10),
+    )
+    return fig
 
 
-# ── Sidebar ───────────────────────────────────────────────────────────────────
-with st.sidebar:
-    st.image("https://upload.wikimedia.org/wikipedia/commons/thumb/4/41/Flag_of_India.svg/320px-Flag_of_India.svg.png", width=120)
-    st.title("⚖️ LitFin Risk Assessor")
-    st.caption("India — Civil & Commercial Disputes")
-    st.divider()
-    st.markdown("""
-**Data sources**
-- 🏛 NJDG (njdg.ecourts.gov.in)
-- 📋 IBBI CIRP Data (ibbi.gov.in)
-- 📄 eCourts Judgments
+def _shap_summary_chart(shap_csv_path: Path, title: str,
+                         top_n: int = 15) -> go.Figure | None:
+    """
+    Loads the global mean-absolute-SHAP CSV saved by train.py and
+    renders a horizontal bar chart for the Model Insights tab.
+    Returns None if the file doesn't exist yet.
+    """
+    if not shap_csv_path.exists():
+        return None
 
-**Models**
-- LightGBM Regressor (Duration)
-- LightGBM Classifier (Outcome)
-- LightGBM Regressor (Realisation %)
+    df = pd.read_csv(shap_csv_path, index_col=0)
+    df.columns = ["mean_abs_shap"]
+    df = df.sort_values("mean_abs_shap", ascending=False).head(top_n)
 
-**Confidence intervals**: Quantile regression (P10 / P90)
-    """)
-    st.divider()
-    st.warning("⚠️ Advisory tool only. All outputs must be reviewed by qualified lawyers before funding decisions.")
+    fig = go.Figure(go.Bar(
+        x=df["mean_abs_shap"],
+        y=df.index,
+        orientation="h",
+        marker_color="#6366F1",
+        text=[f"{v:.4f}" for v in df["mean_abs_shap"]],
+        textposition="outside",
+    ))
+    fig.update_layout(
+        title=title,
+        xaxis_title="Mean |SHAP value| (average impact on model output)",
+        yaxis={"categoryorder": "total ascending"},
+        height=max(300, top_n * 32),
+        plot_bgcolor="rgba(0,0,0,0)",
+        margin=dict(l=10, r=60, t=40, b=10),
+    )
+    return fig
 
 
-# ── Main tabs ─────────────────────────────────────────────────────────────────
-tab1, tab2, tab3 = st.tabs(["🔍 Case Assessment", "📊 Model Insights", "📖 How It Works"])
+# ── Page layout ───────────────────────────────────────────────────────────────
+
+st.title("⚖️ ILFRA — Indian Litigation Finance Risk Assessor")
+st.caption("ML-powered advisory tool for evaluating civil and commercial litigation risk in India.")
+
+tab1, tab2, tab3 = st.tabs(["📋 Case Assessment", "📊 Model Insights", "ℹ️ How It Works"])
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 1 — Case Assessment
 # ══════════════════════════════════════════════════════════════════════════════
 with tab1:
-    st.header("Case Risk Assessment")
-    st.markdown("Fill in the case details below to generate a structured risk estimate.")
+    st.header("Case Assessment")
 
     with st.form("case_form"):
         col1, col2, col3 = st.columns(3)
 
         with col1:
-            st.subheader("📋 Case Details")
+            st.subheader("Case Identity")
             case_type = st.selectbox("Case Type", [
-                "Civil Suit", "Money Recovery", "Injunction", "Partition",
-                "Specific Performance", "Arbitration", "Commercial Dispute",
-                "CIRP (IBC)", "Liquidation (IBC)", "Writ (HC)", "Appeal (HC)",
-                "Consumer Dispute", "Labour / Employment", "IP Infringement",
+                "Civil Suit", "Money Recovery", "Commercial Dispute",
+                "Writ Petition", "CIRP (IBC)", "Liquidation (IBC)",
+                "Arbitration", "Injunction", "Other"
             ])
             court = st.selectbox("Court", [
-                "District Court", "Commercial Court",
-                "High Court (Original)", "High Court (Appeal)",
-                "NCLT", "NCLAT", "Supreme Court",
-                "Consumer Forum (District)", "Consumer Forum (State)",
+                "District Court", "High Court", "Supreme Court",
+                "Commercial Court", "City Civil Court", "Magistrate Court"
             ])
-            state = st.selectbox("State / UT", [
-                "Delhi", "Maharashtra", "Karnataka", "Tamil Nadu", "Telangana",
-                "Gujarat", "West Bengal", "Rajasthan", "Uttar Pradesh", "Punjab",
+            state = st.selectbox("State", [
+                "Delhi", "Maharashtra", "Karnataka", "Tamil Nadu",
+                "West Bengal", "Gujarat", "Rajasthan", "Uttar Pradesh",
+                "Andhra Pradesh", "Telangana", "Other"
             ])
             sector = st.selectbox("Sector", [
-                "Real Estate", "Banking & Finance", "Infrastructure",
-                "Manufacturing", "IT / Technology", "Healthcare",
-                "Retail", "Telecom", "Energy", "Others",
+                "Others", "Real Estate", "Manufacturing", "Banking & Finance",
+                "IT / Technology", "Energy", "Retail", "Healthcare",
+                "Infrastructure", "Agriculture"
             ])
 
         with col2:
-            st.subheader("💰 Financial Details")
-            claim_amount_lakhs = st.number_input(
-                "Claim Amount (₹ Lakhs)", min_value=1.0, max_value=100000.0,
-                value=100.0, step=10.0,
-            )
-            filing_date = st.date_input("Filing Date", value=date(2022, 1, 1))
-            filing_year = filing_date.year
-            filing_quarter = (filing_date.month - 1) // 3 + 1
-            today = date.today()
-            case_age_months = max(0, (today - filing_date).days // 30)
-            st.info(f"📅 Case age: **{case_age_months} months**")
-
-            st.subheader("🔄 Proceedings")
-            num_prior_adjournments = st.slider("Prior Adjournments", 0, 60, 5)
-            has_interim_order = st.checkbox("Interim / Stay Order Obtained")
+            st.subheader("Timeline & Process")
+            filing_year    = st.number_input("Filing Year",    2010, 2025, 2022)
+            filing_quarter = st.selectbox("Filing Quarter",    [1, 2, 3, 4])
+            case_age       = st.number_input("Case Age (months)", 0, 240, 18)
+            num_adjourn    = st.number_input("Prior Adjournments", 0, 100, 5)
+            has_interim    = st.checkbox("Has Interim Order")
+            senior_counsel = st.checkbox("Senior Counsel Appearing")
 
         with col3:
-            st.subheader("👥 Party & Counsel")
-            claimant_lawyer_win_rate = st.slider(
-                "Claimant Lawyer Historical Win Rate", 0.0, 1.0, 0.50, 0.05,
-                help="Estimated from past cases; use 0.5 if unknown",
-            )
-            represented_by_senior_counsel = st.checkbox("Senior Counsel Engaged")
-            respondent_is_govt = st.checkbox("Respondent is Government Body")
-            respondent_is_psu = st.checkbox("Respondent is PSU")
+            st.subheader("Financial & Party")
+            claim_amount       = st.number_input("Claim Amount (₹ Lakhs)", 0.1, 100000.0, 50.0)
+            lawyer_win_rate    = st.slider("Claimant Lawyer Win Rate", 0.0, 1.0, 0.5, 0.05)
+            respondent_is_govt = st.checkbox("Respondent is Government")
+            respondent_is_psu  = st.checkbox("Respondent is PSU")
 
-            # IBC-specific
-            is_ibc = "IBC" in case_type or "Liquidation" in case_type
-            if is_ibc:
-                st.subheader("🏦 IBC / CIRP Details")
-                no_of_financial_creditors = st.number_input("No. of Financial Creditors", 1, 500, 10)
-                resolution_applicants_received = st.number_input("Resolution Applicants Received", 0, 50, 3)
-                ip_changed = st.checkbox("Insolvency Professional Changed")
-                litigation_pending = st.checkbox("Pending Litigation by Creditors")
-            else:
-                no_of_financial_creditors = 1
-                resolution_applicants_received = 1
-                ip_changed = False
-                litigation_pending = False
+            st.subheader("IBC / Money Recovery")
+            num_creditors  = st.number_input("No. of Financial Creditors",     1, 500,  1)
+            num_applicants = st.number_input("Resolution Applicants Received", 0, 50,   0)
+            ip_changed     = st.checkbox("IP Changed During CIRP")
+            lit_pending    = st.checkbox("Litigation Pending")
 
-        submitted = st.form_submit_button("🚀 Generate Risk Assessment", type="primary", use_container_width=True)
+        submitted = st.form_submit_button("🔍 Assess Risk", use_container_width=True)
 
-    # ── Results ──────────────────────────────────────────────────────────────
     if submitted:
-        try:
-            models = load_models()
-            from src.predict import predict_case
+        case_input = {
+            "case_type":                    case_type,
+            "court":                        court,
+            "state":                        state,
+            "sector":                       sector,
+            "filing_year":                  filing_year,
+            "filing_quarter":               filing_quarter,
+            "case_age_months":              case_age,
+            "num_prior_adjournments":       num_adjourn,
+            "has_interim_order":            has_interim,
+            "represented_by_senior_counsel": senior_counsel,
+            "claim_amount_lakhs":           claim_amount,
+            "claimant_lawyer_win_rate":     lawyer_win_rate,
+            "respondent_is_govt":           respondent_is_govt,
+            "respondent_is_psu":            respondent_is_psu,
+            "no_of_financial_creditors":    num_creditors,
+            "resolution_applicants_received": num_applicants,
+            "ip_changed":                   ip_changed,
+            "litigation_pending":           lit_pending,
+        }
 
-            case_input = {
-                "case_type": case_type,
-                "court": court,
-                "state": state,
-                "sector": sector,
-                "claim_amount_lakhs": claim_amount_lakhs,
-                "filing_year": filing_year,
-                "filing_quarter": filing_quarter,
-                "case_age_months": case_age_months,
-                "num_prior_adjournments": num_prior_adjournments,
-                "has_interim_order": has_interim_order,
-                "claimant_lawyer_win_rate": claimant_lawyer_win_rate,
-                "represented_by_senior_counsel": represented_by_senior_counsel,
-                "respondent_is_govt": respondent_is_govt,
-                "respondent_is_psu": respondent_is_psu,
-                "no_of_financial_creditors": no_of_financial_creditors,
-                "resolution_applicants_received": resolution_applicants_received,
-                "ip_changed": ip_changed,
-                "litigation_pending": litigation_pending,
-            }
+        with st.spinner("Running assessment..."):
+            try:
+                models = get_models()
+                result = predict_case(case_input, models)
+            except Exception as e:
+                st.error(f"Assessment failed: {e}")
+                st.stop()
 
-            result = predict_case(case_input, models)
+        # ── KPI cards ─────────────────────────────────────────────────────────
+        st.divider()
+        st.subheader("Assessment Results")
+
+        k1, k2, k3, k4 = st.columns(4)
+        k1.metric("Risk Score",       f"{result['risk_score']} / 100")
+        k2.metric("Recommendation",    result["recommendation"])
+        k3.metric("Outcome Probability",
+                  f"{result['outcome_prob']:.0%}",
+                  delta=result["outcome_label"])
+        k4.metric("Expected Duration",
+                  f"{result['duration_months']} mo",
+                  delta=f"{result['duration_low']}–{result['duration_high']} mo range")
+
+        if result["realisation_pct"] > 0:
+            r1, r2, r3 = st.columns(3)
+            r1.metric("Realisation (P50)", f"{result['realisation_pct']}%")
+            r2.metric("Realisation (P10)", f"{result['realisation_low']}%")
+            r3.metric("Realisation (P90)", f"{result['realisation_high']}%")
+
+        # ── Duration and outcome charts ────────────────────────────────────────
+        c1, c2 = st.columns(2)
+        with c1:
+            fig_dur = go.Figure(go.Bar(
+                x=["Optimistic (P10)", "Median (P50)", "Pessimistic (P90)"],
+                y=[result["duration_low"], result["duration_months"], result["duration_high"]],
+                marker_color=["#1D9E75", "#3B82F6", "#E24B4A"],
+            ))
+            fig_dur.update_layout(
+                title="Duration Estimate (months)",
+                yaxis_title="Months",
+                plot_bgcolor="rgba(0,0,0,0)",
+                height=280,
+            )
+            st.plotly_chart(fig_dur, use_container_width=True)
+
+        with c2:
+            fig_out = go.Figure(go.Indicator(
+                mode="gauge+number",
+                value=result["outcome_prob"] * 100,
+                title={"text": "P(Favourable Outcome) %"},
+                gauge={
+                    "axis": {"range": [0, 100]},
+                    "bar":  {"color": "#1D9E75"},
+                    "steps": [
+                        {"range": [0,  40], "color": "#FEE2E2"},
+                        {"range": [40, 65], "color": "#FEF3C7"},
+                        {"range": [65, 100],"color": "#D1FAE5"},
+                    ],
+                },
+            ))
+            fig_out.update_layout(height=280)
+            st.plotly_chart(fig_out, use_container_width=True)
+
+        # ── Per-case SHAP explanations ─────────────────────────────────────────
+        shap = result.get("shap", {})
+        has_shap = any(v is not None for v in shap.values())
+
+        if has_shap:
             st.divider()
-            st.subheader("📊 Risk Assessment Results")
+            st.subheader("🔍 Why This Prediction? — Feature Contributions (SHAP)")
+            st.caption(
+                "Each bar shows how much a feature pushed the prediction "
+                "**up** (red) or **down** (blue) from the model's baseline. "
+                "Longer bars = stronger influence on this specific case."
+            )
 
-            # Recommendation banner
-            rec = result["recommendation"]
-            if "Strong" in rec:
-                st.success(f"✅ {rec}")
-            elif "Moderate" in rec:
-                st.warning(f"⚠️ {rec}")
-            else:
-                st.error(f"❌ {rec}")
+            shap_tabs = []
+            shap_data = []
+            if shap.get("outcome"):
+                shap_tabs.append("Outcome")
+                shap_data.append(("outcome", "Outcome Model — Feature Contributions (this case)"))
+            if shap.get("duration"):
+                shap_tabs.append("Duration")
+                shap_data.append(("duration", "Duration Model — Feature Contributions (this case)"))
+            if shap.get("realisation"):
+                shap_tabs.append("Realisation")
+                shap_data.append(("realisation", "Realisation Model — Feature Contributions (this case)"))
 
-            # KPI cards
-            k1, k2, k3, k4 = st.columns(4)
-            dur = {"p10": result["duration_low"], "p50": result["duration_months"], "p90": result["duration_high"]}
-            p_fav = result["outcome_prob"]
-            risk = result["risk_score"]
+            if shap_tabs:
+                shap_tab_objects = st.tabs(shap_tabs)
+                for tab_obj, (key, title) in zip(shap_tab_objects, shap_data):
+                    with tab_obj:
+                        fig = _shap_waterfall_chart(shap[key], title)
+                        st.plotly_chart(fig, use_container_width=True)
+                        st.caption(
+                            f"Base value (model average) plus these contributions = "
+                            f"the final prediction for this case."
+                        )
+        else:
+            st.info(
+                "SHAP explainers not found. Re-run `python src/train.py` "
+                "after installing SHAP (`pip install shap`) to enable "
+                "per-case feature contribution charts.",
+                icon="ℹ️",
+            )
 
-            with k1:
-                st.metric("Expected Duration (median)", f"{dur['p50']:.0f} months",
-                          f"Range: {dur['p10']:.0f}–{dur['p90']:.0f} mo")
-            with k2:
-                st.metric("P(Favourable Outcome)", f"{p_fav*100:.1f}%",
-                          "Higher is better for claimant")
-            with k3:
-                if result["realisation_pct"] > 0:
-                    st.metric("Expected Recovery", f"{result['realisation_pct']:.1f}%",
-                              f"Range: {result['realisation_low']:.1f}–{result['realisation_high']:.1f}%")
-                else:
-                    st.metric("Recovery Model", "N/A (non-monetary)")
-            with k4:
-                colour = "normal" if risk >= 50 else "inverse"
-                st.metric("Composite Risk Score", f"{risk:.0f} / 100",
-                          "↑ higher = lower risk", delta_color=colour)
-
+        # ── CBR similar precedents ─────────────────────────────────────────────
+        cbr = result.get("cbr", {})
+        if cbr.get("similar_cases"):
             st.divider()
-            col_a, col_b = st.columns(2)
+            st.subheader("📚 Similar Precedents")
 
-            if "cbr" in result and result["cbr"]["similar_cases"]:
-                st.divider()
-                st.subheader("Similar Precedents")
-
-                # Blend commentary
-                blend = blend_summary(result, result["cbr"]["adapted"])
+            mode = "ibc" if "IBC" in case_input.get("case_type", "") else "njdg"
+            try:
+                from src.cbr_explainer import summarise_precedents, blend_summary
+                blend = blend_summary(result, cbr.get("adapted", {}))
                 if blend:
                     st.info(blend)
+                st.markdown(summarise_precedents(cbr["similar_cases"], mode=mode))
+            except Exception:
+                pass
 
-                # Natural language summary
-                mode = "ibc" if "IBC" in case_input.get("case_type","") else "njdg"
-                st.markdown(summarise_precedents(result["cbr"]["similar_cases"], mode=mode))
-
-                # Detailed precedent cards
-                with st.expander("View individual precedent cases"):
-                    for c in result["cbr"]["similar_cases"]:
-                        col1, col2, col3, col4 = st.columns(4)
-                        col1.metric("Similarity",    f"{c.similarity:.0%}")
-                        col2.metric("Duration",      f"{c.duration_months:.0f} mo" if c.duration_months else "—")
-                        col3.metric("Outcome",       "Favourable" if c.favourable == 1 else "Unfavourable" if c.favourable == 0 else "—")
-                        col4.metric("Recovery",      f"{c.realisation_pct:.1f}%" if c.realisation_pct else "—")
-                        st.caption(f"Case ID: {c.case_id}  |  Court: {c.court or '—'}  |  Type: {c.case_type or '—'}  |  Filed: {c.filing_year or '—'}")
-                        st.divider()
-
-            # Duration confidence chart
-            with col_a:
-                st.subheader("⏱ Duration Distribution")
-                fig = go.Figure()
-                fig.add_trace(go.Bar(
-                    x=["P10 (Optimistic)", "P50 (Median)", "P90 (Pessimistic)"],
-                    y=[dur["p10"], dur["p50"], dur["p90"]],
-                    marker_color=["#2ecc71", "#3498db", "#e74c3c"],
-                    text=[f"{v:.0f} mo" for v in [dur["p10"], dur["p50"], dur["p90"]]],
-                    textposition="outside",
-                ))
-                fig.update_layout(yaxis_title="Months to Disposal", height=320,
-                                  plot_bgcolor="rgba(0,0,0,0)")
-                st.plotly_chart(fig, use_container_width=True)
-
-            # Outcome probability gauge
-            with col_b:
-                st.subheader("🎯 Outcome Probability")
-                fig2 = go.Figure(go.Indicator(
-                    mode="gauge+number+delta",
-                    value=p_fav * 100,
-                    delta={"reference": 50},
-                    gauge={
-                        "axis": {"range": [0, 100]},
-                        "bar": {"color": "#3498db"},
-                        "steps": [
-                            {"range": [0, 40], "color": "#e74c3c"},
-                            {"range": [40, 60], "color": "#f39c12"},
-                            {"range": [60, 100], "color": "#2ecc71"},
-                        ],
-                        "threshold": {
-                            "line": {"color": "black", "width": 4},
-                            "thickness": 0.75,
-                            "value": 50,
-                        },
-                    },
-                    title={"text": "P(Favourable) %"},
-                ))
-                fig2.update_layout(height=320)
-                st.plotly_chart(fig2, use_container_width=True)
-
-            # Realisation chart (if applicable)
-            if result["realisation_pct"] > 0:
-                st.subheader("💰 Recovery / Realisation Range")
-                fig3 = go.Figure()
-                fig3.add_trace(go.Bar(
-                    x=["P10 (Pessimistic)", "P50 (Median)", "P90 (Optimistic)"],
-                    y=[result["realisation_low"], result["realisation_pct"], result["realisation_high"]],
-                    marker_color=["#e74c3c", "#3498db", "#2ecc71"],
-                    text=[f"{v:.1f}%" for v in [result["realisation_low"], result["realisation_pct"], result["realisation_high"]]],
-                    textposition="outside",
-                ))
-                fig3.update_layout(yaxis_title="Recovery %", yaxis_range=[0, 105],
-                    height=300, plot_bgcolor="rgba(0,0,0,0)")
-                st.plotly_chart(fig3, use_container_width=True)
-
-            # Raw output expander
-            with st.expander("🔎 Raw Model Output (JSON)"):
-                st.json(result)
-
-            # PDF report download
-            pdf_bytes = generate_assessment_report(
-                case_inputs=case_input,
-                predictions=result,
-            )
-            st.download_button(
-                label="📄 Download Assessment Report (PDF)",
-                data=pdf_bytes,
-                file_name=f"ILFRA_Assessment_{case_type.replace(' ', '_')}.pdf",
-                mime="application/pdf",
-            )
-
-        except FileNotFoundError as e:
-            st.error(f"Models not found. Please run the training pipeline first.\n\n`{e}`")
-            st.code("cd litfin && python src/data_ingestion.py && python src/feature_engineering.py && python src/train.py")
-        except Exception as e:
-            st.error(f"Prediction error: {e}")
-            import traceback
-            st.code(traceback.format_exc())
+            with st.expander("View individual precedent cases"):
+                for c in cbr["similar_cases"]:
+                    col1, col2, col3, col4 = st.columns(4)
+                    col1.metric("Similarity",  f"{c.similarity:.0%}")
+                    col2.metric("Duration",    f"{c.duration_months:.0f} mo"
+                                              if c.duration_months else "—")
+                    col3.metric("Outcome",     "Favourable"   if c.favourable == 1
+                                              else "Unfavourable" if c.favourable == 0
+                                              else "—")
+                    col4.metric("Recovery",    f"{c.realisation_pct:.1f}%"
+                                              if c.realisation_pct else "—")
+                    st.caption(
+                        f"Case ID: {c.case_id}  |  "
+                        f"Court: {c.court or '—'}  |  "
+                        f"Type: {c.case_type or '—'}  |  "
+                        f"Filed: {c.filing_year or '—'}"
+                    )
+                    st.divider()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -333,30 +338,78 @@ with tab2:
     st.header("📊 Model Insights & Feature Importance")
 
     try:
-        fi_data = load_feature_importance()
+        # ── Training metrics ───────────────────────────────────────────────────
         metrics_path = MODELS_DIR / "training_metrics.csv"
-
         if metrics_path.exists():
             metrics_df = pd.read_csv(metrics_path, index_col=0)
             st.subheader("Training Metrics")
-            st.dataframe(metrics_df.style.format("{:.3f}", na_rep="—"), use_container_width=True)
+            st.dataframe(
+                metrics_df.style.format("{:.3f}", na_rep="—"),
+                use_container_width=True,
+            )
             st.divider()
 
-        for model_name, fi_df in fi_data.items():
-            st.subheader(f"{model_name} Model — Top Features")
-            top = fi_df.head(12)
-            fig = px.bar(
-                top.reset_index(), x="importance", y="index",
-                orientation="h", color="importance",
-                color_continuous_scale="Blues",
-                labels={"index": "Feature", "importance": "Importance Score"},
-            )
-            fig.update_layout(yaxis={"categoryorder": "total ascending"}, height=380,
-                              plot_bgcolor="rgba(0,0,0,0)")
-            st.plotly_chart(fig, use_container_width=True)
+        # ── SHAP global summary (preferred over LightGBM importance) ──────────
+        shap_files = {
+            "Outcome":      MODELS_DIR / "outcome_shap_values.csv",
+            "Duration":     MODELS_DIR / "duration_shap_values.csv",
+            "Realisation":  MODELS_DIR / "realisation_shap_values.csv",
+        }
 
-        # ── Calibration reliability diagram ───────────────────────────────
-        # Replace the single cal_path check with:
+        shap_available = any(p.exists() for p in shap_files.values())
+
+        if shap_available:
+            st.subheader("Global Feature Importance — SHAP (Mean |SHAP Value|)")
+            st.caption(
+                "SHAP-based global importance measures each feature's average "
+                "contribution to predictions across all training cases. "
+                "This is more reliable than LightGBM's gain-based importance "
+                "because it is measured in the model's output units and accounts "
+                "for feature interactions."
+            )
+            for model_name, shap_path in shap_files.items():
+                fig = _shap_summary_chart(
+                    shap_path,
+                    f"{model_name} Model — Global Feature Importance (SHAP)"
+                )
+                if fig:
+                    st.plotly_chart(fig, use_container_width=True)
+                    st.divider()
+
+        else:
+            # ── Fallback: LightGBM native importance ───────────────────────────
+            st.subheader("Feature Importance (LightGBM native)")
+            st.caption(
+                "SHAP explainers not found. Showing LightGBM gain-based importance. "
+                "Re-run `python src/train.py` after `pip install shap` "
+                "for more reliable SHAP-based importance."
+            )
+            fi_paths = {
+                "Outcome":     MODELS_DIR / "outcome_feature_importance.csv",
+                "Duration":    MODELS_DIR / "duration_feature_importance.csv",
+                "Realisation": MODELS_DIR / "realisation_feature_importance.csv",
+            }
+            for model_name, fi_path in fi_paths.items():
+                if not fi_path.exists():
+                    continue
+                fi_df = pd.read_csv(fi_path, index_col=0)
+                fi_df.columns = ["importance"]
+                top = fi_df.sort_values("importance", ascending=False).head(12)
+                fig = px.bar(
+                    top.reset_index(), x="importance", y="index",
+                    orientation="h", color="importance",
+                    color_continuous_scale="Blues",
+                    labels={"index": "Feature", "importance": "Importance Score"},
+                    title=f"{model_name} Model — Top Features",
+                )
+                fig.update_layout(
+                    yaxis={"categoryorder": "total ascending"},
+                    height=380,
+                    plot_bgcolor="rgba(0,0,0,0)",
+                )
+                st.plotly_chart(fig, use_container_width=True)
+
+        # ── Calibration reliability diagram ───────────────────────────────────
         raw_path = MODELS_DIR / "calibration_curve_raw.csv"
         cal_path = MODELS_DIR / "calibration_curve_cal.csv"
 
@@ -385,7 +438,8 @@ with tab2:
             fig_cal.update_layout(
                 xaxis_title="Mean predicted probability",
                 yaxis_title="Fraction of positive outcomes",
-                height=380, plot_bgcolor="rgba(0,0,0,0)"
+                height=380,
+                plot_bgcolor="rgba(0,0,0,0)",
             )
             st.plotly_chart(fig_cal, use_container_width=True)
             st.caption(
@@ -394,58 +448,50 @@ with tab2:
             )
 
     except Exception:
-        st.info("Train the models first to see feature importance charts here.\n\n"
-                "Run: `python src/train.py`")
+        st.info(
+            "Train the models first to see insights here.\n\n"
+            "Run: `python src/train.py`"
+        )
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 3 — How It Works
 # ══════════════════════════════════════════════════════════════════════════════
 with tab3:
-    st.header("📖 How the Risk Assessor Works")
+    st.header("ℹ️ How It Works")
+
     st.markdown("""
-### Architecture Overview
+### Pipeline Overview
 
-```
-Public Data Sources
-  ├── NJDG CSV exports        ─┐
-  ├── IBBI CIRP Excel          ├── data_ingestion.py → data/raw/
-  └── eCourts judgment PDFs  ─┘
+ILFRA combines three complementary approaches to litigation risk assessment:
 
-Feature Engineering (feature_engineering.py)
-  ├── Categorical encoding (case type, court, state, sector)
-  ├── Financial features (log claim amount, claim bucket)
-  ├── Process signals (adjournments, interim orders)
-  ├── Party/counsel signals (lawyer win rate, govt respondent)
-  └── Aggregate stats (historical court disposal rates)
+**1. ML Prediction (LightGBM)**
+Three LightGBM models are trained on historical case data from NJDG and IBBI CIRP:
+- **Duration model** — predicts expected case length with P10/P50/P90 confidence intervals using quantile regression
+- **Outcome classifier** — predicts probability of a favourable outcome, calibrated with isotonic regression
+- **Realisation model** — predicts financial recovery percentage for IBC and Money Recovery cases
 
-Model Training (train.py)
-  ├── Duration model     → LightGBM Regressor (+ quantile P10/P90)
-  ├── Outcome model      → LightGBM Classifier (AUC scored)
-  └── Realisation model  → LightGBM Regressor (+ quantile P10/P90)
+**2. SHAP Explainability**
+Every prediction is accompanied by SHAP (SHapley Additive exPlanations) values that show exactly which features drove the prediction for this specific case. SHAP values are in the model's output units — positive values push the prediction higher, negative values lower.
 
-Streamlit App (this interface)
-  └── Prediction API (predict.py) → structured risk report
-```
+**3. Case-Based Reasoning (CBR)**
+The CBR engine retrieves the K most similar historical cases using weighted cosine similarity, where features are weighted by their domain importance. The retrieved cases provide concrete precedents with known outcomes, and their results are blended with the ML prediction via similarity-weighted averaging.
 
-### Key Design Decisions
+### Design Decisions
 
 | Decision | Rationale |
-|----------|-----------|
-| LightGBM over XGBoost | Faster on tabular data, handles categoricals natively |
-| Quantile regression for CIs | Distribution-free, no normality assumption required |
-| Separate IBC model | IBC proceedings have fundamentally different dynamics than civil suits |
-| Log-transform on claim amount | Claim amounts span 4+ orders of magnitude |
-| Adjournment density feature | Raw count without normalising for case age is misleading |
+|---|---|
+| Quantile regression for duration | Gives statistically valid confidence intervals without distributional assumptions |
+| Isotonic calibration over Platt scaling | Fewer assumptions about miscalibration shape; better for LightGBM outputs |
+| SHAP TreeExplainer | Exact algorithm for tree models; computationally efficient; output in prediction units |
+| Weighted cosine similarity for CBR | Handles mixed feature scales; domain-important features penalise mismatch more |
+| Content-based IBBI sheet detection | Robust to IBBI's quarterly table renumbering without code changes |
 
 ### Ethical Guardrails
-- All training data is from **public government sources** only
-- Model outputs are **advisory signals**, not legal opinions
-- **No individual litigant data** is stored or processed
-- Feature importance reports provide **full transparency**
-- The tool explicitly recommends seeking qualified legal review
 
-### Limitations
-- Trained on public metadata — cannot access sealed records or private settlement terms
-- Lawyer win rates require manual input; no automated lookup yet
-- Predictions degrade for highly novel case types not well-represented in training data
-- Model should be retrained quarterly as new NJDG data becomes available
+- ILFRA is an **advisory tool only** — not a substitute for qualified legal advice
+- All predictions carry uncertainty and should be interpreted as probabilistic estimates
+- SHAP values explain model behaviour but do not imply causal relationships
+- CBR precedents are retrieved from available data and may not represent all relevant case types
+- Funding and legal decisions must involve qualified legal professionals
     """)
