@@ -132,30 +132,53 @@ def get_feature_cols() -> list[str]:
 
 def build_ibc_features(df: pd.DataFrame, fit: bool = True,
                         encoders: dict = None) -> tuple[pd.DataFrame, dict]:
-    """Feature engineering for IBBI/IBC dataset."""
+    """
+    Feature engineering for IBBI/IBC dataset.
+    Reads from ibbi_real.csv produced by ibbi_channel.py.
+
+    Key fix: real IBBI data uses cirp_start_date not admission_date.
+    """
     if encoders is None:
         encoders = {}
     df = df.copy()
 
-    df["admission_date"] = pd.to_datetime(df["admission_date"])
-    df["admission_year"] = df["admission_date"].dt.year
-    df["log_admitted_claim"] = np.log1p(df["admitted_claim_cr"])
-    df["applicants_per_creditor"] = (
-        df["resolution_applicants_received"] / df["no_of_financial_creditors"].clip(1)
-    )
+    # cirp_start_date is the real column name from ibbi_channel.py output
+    df["cirp_start_date"] = pd.to_datetime(df["cirp_start_date"], errors="coerce")
+    df["admission_year"]  = df["cirp_start_date"].dt.year
 
-    # resolution_status is the strongest predictor of realisation_pct
-    # (Liquidation → ~3%, Resolution Plan Approved → ~34%, Settled/Withdrawn → ~62%)
-    # Encode categorical columns specifically for IBC data
+    df["log_admitted_claim"] = np.log1p(df["admitted_claim_cr"])
+
+    # Creditor/applicant ratio — handle missing gracefully
+    if "resolution_applicants_received" in df.columns and "no_of_financial_creditors" in df.columns:
+        df["applicants_per_creditor"] = (
+            df["resolution_applicants_received"] / df["no_of_financial_creditors"].clip(1)
+        )
+    else:
+        df["applicants_per_creditor"] = 0.0
+
+    # Fill missing process flags with 0 — not all quarters report these
+    for flag_col in ["ip_changed", "litigation_pending",
+                     "no_of_financial_creditors", "resolution_applicants_received"]:
+        if flag_col not in df.columns:
+            df[flag_col] = 0
+        df[flag_col] = df[flag_col].fillna(0)
+
+    # Encode categoricals
+    # bench may not exist in all quarters — default to "Unknown"
+    if "bench" not in df.columns:
+        df["bench"] = "Unknown"
+    df["bench"] = df["bench"].fillna("Unknown")
+
     ibc_cats = ["sector", "bench", "resolution_status"]
     for col in ibc_cats:
+        if col not in df.columns:
+            df[col] = "Unknown"
+        df[col] = df[col].fillna("Unknown")
         if fit:
-            # Fit new encoder on the categorical column
             le = LabelEncoder()
             df[col + "_enc"] = le.fit_transform(df[col].astype(str))
             encoders[f"ibc_{col}"] = le
         else:
-            # Transform using existing encoder, defaulting to the first class if unseen
             le = encoders[f"ibc_{col}"]
             known = set(le.classes_)
             df[col] = df[col].apply(lambda x: x if x in known else le.classes_[0])
@@ -166,28 +189,60 @@ def build_ibc_features(df: pd.DataFrame, fit: bool = True,
 
 def get_ibc_feature_cols() -> list[str]:
     """
-    Returns the canonical list of model input features for IBBI/IBC data.
-    Ordered by logical groupings for outcome prediction.
+    Feature cols for the IBBI realisation model.
+    Uses duration_days and favourable_outcome as features — both
+    are known for closed cases which is the only subset realisation is trained on.
     """
     return [
-        # Outcome signals (strongest predictors — ~77% of importance)
-        "resolution_status_enc",  # Liquidation vs Resolution vs Settled/Withdrawn
-        "favourable_outcome",     # binary summary of resolution_status
-
-        # Financial signals
         "log_admitted_claim",
-        "duration_days",          # time taken correlates with recovery complexity
-
-        # Creditor / applicant dynamics
+        "duration_days",
         "no_of_financial_creditors",
         "resolution_applicants_received",
         "applicants_per_creditor",
-
-        # Process risk signals
         "ip_changed",
         "litigation_pending",
+        "sector_enc",
+        "bench_enc",
+        "admission_year",
+    ]
 
-        # Context
+
+def get_ibc_duration_feature_cols() -> list[str]:
+    """
+    Feature cols for the IBBI duration model.
+    Excludes duration_days (that's the target).
+    Excludes favourable_outcome (leakage — outcome is determined at resolution,
+    same time as duration).
+    """
+    return [
+        "resolution_status_enc",
+        "log_admitted_claim",
+        "no_of_financial_creditors",
+        "resolution_applicants_received",
+        "applicants_per_creditor",
+        "ip_changed",
+        "litigation_pending",
+        "sector_enc",
+        "bench_enc",
+        "admission_year",
+    ]
+
+
+def get_ibc_outcome_feature_cols() -> list[str]:
+    """
+    Feature cols for the IBBI outcome classifier.
+    Excludes favourable_outcome (that's the target).
+    Excludes duration_days — unknown at assessment time for ongoing cases,
+    and leaky for closed cases (duration is determined simultaneously with outcome).
+    """
+    return [
+        "resolution_status_enc",
+        "log_admitted_claim",
+        "no_of_financial_creditors",
+        "resolution_applicants_received",
+        "applicants_per_creditor",
+        "ip_changed",
+        "litigation_pending",
         "sector_enc",
         "bench_enc",
         "admission_year",
@@ -195,22 +250,7 @@ def get_ibc_feature_cols() -> list[str]:
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
-
-def main():
-    # NJDG
-    njdg = pd.read_csv(RAW_DIR / "njdg_synthetic.csv")
-    njdg_feat, enc = engineer_njdg_features(njdg, fit=True)
-    njdg_feat.to_csv(PROCESSED_DIR / "njdg_features.csv", index=False)
-    joblib.dump(enc, MODELS_DIR / "njdg_encoders.pkl")
-    print(f"[feature_engineering] NJDG features saved. Shape: {njdg_feat.shape}")
-
-    # IBBI
-    ibc = pd.read_csv(RAW_DIR / "ibbi_synthetic.csv")
-    ibc_feat, ibc_enc = build_ibc_features(ibc, fit=True)
-    ibc_feat.to_csv(PROCESSED_DIR / "ibc_features.csv", index=False)
-    joblib.dump(ibc_enc, MODELS_DIR / "ibc_encoders.pkl")
-    print(f"[feature_engineering] IBC features saved. Shape: {ibc_feat.shape}")
-
-
-if __name__ == "__main__":
-    main()
+# main() is intentionally removed.
+# Feature engineering is now called directly by the pipeline files:
+#   src/pipelines/ibbi_pipeline.py  — active, uses ibbi_real.csv
+#   src/pipelines/njdg_pipeline.py  — commented out, no real data yet
