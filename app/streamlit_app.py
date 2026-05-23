@@ -19,7 +19,7 @@ import plotly.graph_objects as go
 import plotly.express as px
 from pathlib import Path
 
-from src.predict import load_models, predict_case
+from src.inference.predict import load_models, predict_case
 
 MODELS_DIR = Path(__file__).parent.parent / "models"
 
@@ -166,7 +166,7 @@ with tab1:
             ip_changed     = st.checkbox("IP Changed During CIRP")
             lit_pending    = st.checkbox("Litigation Pending")
 
-        submitted = st.form_submit_button("🔍 Assess Risk", use_container_width=True)
+        submitted = st.form_submit_button("🔍 Assess Risk", width="stretch")
 
     if submitted:
         case_input = {
@@ -303,7 +303,7 @@ with tab1:
 
             mode = "ibc" if "IBC" in case_input.get("case_type", "") else "njdg"
             try:
-                from src.cbr_explainer import summarise_precedents, blend_summary
+                from cbr.cbr_explainer import summarise_precedents, blend_summary
                 blend = blend_summary(result, cbr.get("adapted", {}))
                 if blend:
                     st.info(blend)

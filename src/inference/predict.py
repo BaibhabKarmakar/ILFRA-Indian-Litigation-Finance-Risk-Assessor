@@ -5,20 +5,23 @@ Loads trained models and encoders, takes a case input dict,
 and returns structured risk assessment output.
 """
 
+import sys, os
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
 import numpy as np
 import pandas as pd
 import joblib
 from pathlib import Path
-from src.cbr_engine import get_engine
-from src.feature_engineering import (
+from cbr.cbr_engine import get_engine
+from training.feature_engineering import (
     get_feature_cols,
     get_ibc_feature_cols,
     get_ibc_duration_feature_cols,
     get_ibc_outcome_feature_cols,
 )
-from src.cbr_explainer import summarise_precedents, blend_summary
+from cbr.cbr_explainer import summarise_precedents, blend_summary
 
-MODELS_DIR = Path(__file__).parent.parent / "models"
+MODELS_DIR = Path(__file__).parent.parent.parent / "models"
 
 def _run_cbr(case: dict, query_njdg: np.ndarray, query_ibc: np.ndarray,
              fc_njdg: list, fc_ibc: list, k: int = 5) -> dict:
@@ -212,6 +215,7 @@ def predict_case(case: dict, models: dict) -> dict:
         fc_real = get_ibc_feature_cols()
         real_row = {
             **outcome_row,
+            "duration_days": dur_days_p50,
             "favourable_outcome": int(p_favour >= 0.5),
             "duration_days":      dur_days_p50,
         }

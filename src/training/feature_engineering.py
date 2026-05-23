@@ -196,6 +196,7 @@ def get_ibc_feature_cols() -> list[str]:
     return [
         "log_admitted_claim",
         "duration_days",
+        "favourable_outcome",
         "no_of_financial_creditors",
         "resolution_applicants_received",
         "applicants_per_creditor",
@@ -215,7 +216,6 @@ def get_ibc_duration_feature_cols() -> list[str]:
     same time as duration).
     """
     return [
-        "resolution_status_enc",
         "log_admitted_claim",
         "no_of_financial_creditors",
         "resolution_applicants_received",
@@ -236,7 +236,6 @@ def get_ibc_outcome_feature_cols() -> list[str]:
     and leaky for closed cases (duration is determined simultaneously with outcome).
     """
     return [
-        "resolution_status_enc",
         "log_admitted_claim",
         "no_of_financial_creditors",
         "resolution_applicants_received",

@@ -15,19 +15,20 @@ import numpy as np
 import pandas as pd
 import joblib
 from pathlib import Path
-from src.feature_engineering import get_feature_cols, get_ibc_feature_cols
+from training.feature_engineering import get_feature_cols, get_ibc_feature_cols
 
-PROCESSED_DIR = Path(__file__).parent.parent / "data" / "processed"
-MODELS_DIR    = Path(__file__).parent.parent / "models"
+PROCESSED_DIR = Path(__file__).parent.parent.parent / "data" / "processed"
+MODELS_DIR    = Path(__file__).parent.parent.parent / "models"
 
 def build_case_base():
-    njdg = pd.read_csv(PROCESSED_DIR / "njdg_features.csv")
+    #njdg = pd.read_csv(PROCESSED_DIR / "njdg_features.csv")
     ibc  = pd.read_csv(PROCESSED_DIR / "ibc_features.csv")
 
-    fc_njdg = get_feature_cols()
+    #fc_njdg = get_feature_cols()
     fc_ibc  = get_ibc_feature_cols()
 
     # NJDG case base
+    '''
     njdg_base = {
         "features":       njdg[fc_njdg].fillna(0).values.astype(np.float32),
         "feature_cols":   fc_njdg,
@@ -39,7 +40,7 @@ def build_case_base():
         "filing_year":    njdg["filing_year"].values  if "filing_year" in njdg.columns else None,
         "case_id":        njdg["case_id"].values      if "case_id" in njdg.columns else None,
     }
-
+    '''
     # IBC case base
     ibc_base = {
         "features":         ibc[fc_ibc].fillna(0).values.astype(np.float32),
@@ -51,9 +52,9 @@ def build_case_base():
         "cirp_id":          ibc["cirp_id"].values if "cirp_id" in ibc.columns else None,
     }
 
-    case_base = {"njdg": njdg_base, "ibc": ibc_base}
+    case_base = { "ibc": ibc_base}
     joblib.dump(case_base, MODELS_DIR / "cbr_case_base.pkl")
-    print(f"[cbr] Case base built: {len(njdg)} NJDG cases, {len(ibc)} IBC cases")
+    print(f"[cbr] Case base built: {len(ibc)} IBC cases")
     return case_base
 
 

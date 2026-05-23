@@ -5,7 +5,7 @@ Converts retrieved SimilarCase objects into natural language
 precedent summaries for the Streamlit UI.
 """
 
-from src.cbr_engine import SimilarCase
+from cbr.cbr_engine import SimilarCase
 
 
 def summarise_precedents(cases: list[SimilarCase], mode: str = "njdg") -> str:

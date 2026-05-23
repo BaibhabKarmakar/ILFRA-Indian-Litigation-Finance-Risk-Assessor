@@ -33,7 +33,7 @@ N_TRIALS = 40      # Optuna trials per model — increase to 80 for real data
 N_FOLDS  = 5       # CV folds
 SEED     = 42
 
-from src.feature_engineering import get_feature_cols, get_ibc_feature_cols
+from training.feature_engineering import get_feature_cols, get_ibc_feature_cols
 
 
 # ── Search spaces ─────────────────────────────────────────────────────────────
