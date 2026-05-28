@@ -163,10 +163,10 @@ def predict_case(case: dict, models: dict) -> dict:
     # Build IBC outcome feature row — excludes duration_days (unknown at assessment time)
     fc_outcome = get_ibc_outcome_feature_cols()
     outcome_row = {
-        "resolution_status_enc": _encode_col(
-            resolution_status, ibc_enc["ibc_resolution_status"]
-        ),
         "log_admitted_claim":              np.log1p(claim / 100),
+        "log_liquidation_value":           0.0,   # unknown at assessment time — neutral default
+        "claim_to_liquidation_ratio":      1.0,   # neutral default — no liquidation value known yet
+        "is_large_case":                   int(claim > 50000),  # claim in lakhs; 50000L = 500Cr
         "no_of_financial_creditors":       num_creditors,
         "resolution_applicants_received":  num_applicants,
         "applicants_per_creditor":         num_applicants / max(num_creditors, 1),
@@ -181,14 +181,16 @@ def predict_case(case: dict, models: dict) -> dict:
     X_outcome = pd.DataFrame([outcome_row])[fc_outcome]
 
     # Use calibrated model if available
-    outcome_model = models.get("outcome_calibrated") or models["outcome"]
+    outcome_model = models["outcome"]
     p_favour = float(outcome_model.predict_proba(X_outcome)[0][1])
 
     # ── Duration prediction (IBC duration model) ──────────────────────────────
     fc_duration = get_ibc_duration_feature_cols()
     duration_row = {
-        "resolution_status_enc":           outcome_row["resolution_status_enc"],
         "log_admitted_claim":              outcome_row["log_admitted_claim"],
+        "log_liquidation_value":           outcome_row["log_liquidation_value"],
+        "claim_to_liquidation_ratio":      outcome_row["claim_to_liquidation_ratio"],
+        "is_large_case":                   outcome_row["is_large_case"],
         "no_of_financial_creditors":       num_creditors,
         "resolution_applicants_received":  num_applicants,
         "applicants_per_creditor":         outcome_row["applicants_per_creditor"],
@@ -215,9 +217,8 @@ def predict_case(case: dict, models: dict) -> dict:
         fc_real = get_ibc_feature_cols()
         real_row = {
             **outcome_row,
-            "duration_days": dur_days_p50,
-            "favourable_outcome": int(p_favour >= 0.5),
             "duration_days":      dur_days_p50,
+            "favourable_outcome": int(p_favour >= 0.5),
         }
         X_real = pd.DataFrame([real_row])[fc_real]
         try:

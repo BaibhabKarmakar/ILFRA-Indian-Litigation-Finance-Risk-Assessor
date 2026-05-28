@@ -155,7 +155,7 @@ with tab1:
 
         with col3:
             st.subheader("Financial & Party")
-            claim_amount       = st.number_input("Claim Amount (₹ Lakhs)", 0.1, 100000.0, 50.0)
+            claim_amount       = st.number_input("Claim Amount (₹ Lakhs)", 0.1, 1000000.0, 50.0)
             lawyer_win_rate    = st.slider("Claimant Lawyer Win Rate", 0.0, 1.0, 0.5, 0.05)
             respondent_is_govt = st.checkbox("Respondent is Government")
             respondent_is_psu  = st.checkbox("Respondent is PSU")
@@ -385,8 +385,8 @@ with tab2:
                 "for more reliable SHAP-based importance."
             )
             fi_paths = {
-                "Outcome":     MODELS_DIR / "outcome_feature_importance.csv",
-                "Duration":    MODELS_DIR / "duration_feature_importance.csv",
+                "Outcome":     MODELS_DIR / "ibc_outcome_feature_importance.csv",
+                "Duration":    MODELS_DIR / "ibc_duration_feature_importance.csv",
                 "Realisation": MODELS_DIR / "realisation_feature_importance.csv",
             }
             for model_name, fi_path in fi_paths.items():

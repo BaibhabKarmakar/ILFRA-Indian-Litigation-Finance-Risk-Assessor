@@ -71,7 +71,7 @@ def _objective_outcome(trial: optuna.Trial, X: np.ndarray, y: np.ndarray) -> flo
     skf = StratifiedKFold(n_splits=N_FOLDS, shuffle=True, random_state=SEED)
     aucs = []
     for train_idx, val_idx in skf.split(X, y):
-        X_tr, X_val = X[train_idx], X[val_idx]
+        X_tr, X_val = X.iloc[train_idx], X.iloc[val_idx]
         y_tr, y_val = y[train_idx], y[val_idx]
         m = lgb.LGBMClassifier(**params)
         m.fit(X_tr, y_tr,
@@ -162,8 +162,8 @@ def main():
     fc_njdg = get_feature_cols()
     fc_ibc  = get_ibc_feature_cols()
 
-    X_njdg = njdg[fc_njdg].fillna(0).values
-    X_ibc  = ibc[fc_ibc].fillna(0).values
+    X_njdg = njdg[fc_njdg].fillna(0)
+    X_ibc  = ibc[fc_ibc].fillna(0)
 
     best_params = {}
     all_trials  = []

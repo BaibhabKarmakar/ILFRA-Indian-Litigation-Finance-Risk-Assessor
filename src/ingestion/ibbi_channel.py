@@ -61,10 +61,8 @@ SCHEMA = [
     "company_name",
     "cirp_start_date",
     "resolution_date",
-    "cirp_initiated_by",
     "admitted_claim_cr",
     "liquidation_value",
-    "fair_value",
     "realisable_amount",
     "realisation_pct",
     "resolution_status",
@@ -207,9 +205,6 @@ def _derive_features(df: pd.DataFrame) -> pd.DataFrame:
         df["resolution_status"] == "Resolution Plan Approved"
     ).astype(int)
 
-    # Log-scale claim
-    df["log_admitted_claim"] = np.log1p(df["admitted_claim_cr"])
-
     # Admission year
     df["admission_year"] = df["cirp_start_date"].dt.year
 
@@ -233,8 +228,14 @@ def _validate_and_clean(df: pd.DataFrame) -> pd.DataFrame:
     median_duration = df.groupby("resolution_status")["duration_days"].transform("median")
     df["duration_days"] = df["duration_days"].fillna(median_duration)
 
+    # Cap admitted_claim_cr — cases above 10,000 Cr are structural outliers
+    df["admitted_claim_cr"] = df["admitted_claim_cr"].clip(upper=10000)
+
+    # Cap duration — cases above 2500 days are exceptional appeal-stage outliers
+    df["duration_days"] = df["duration_days"].clip(upper=2500)
+
     # Clip realisation to valid range
-    df["realisation_pct"] = df["realisation_pct"].clip(0, 150)
+    df["realisation_pct"] = df["realisation_pct"].clip(0, 100)
 
     # Drop only rows that are still missing critical fields after imputation
     df = df.dropna(subset=["admitted_claim_cr", "realisation_pct", "duration_days"])
