@@ -4,7 +4,7 @@ Uses LightGBM if available, falls back to sklearn GradientBoosting.
 """
 
 import sys, os
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
 
 import numpy as np
@@ -27,7 +27,7 @@ PROCESSED_DIR = Path(__file__).parent.parent / "data" / "processed"
 MODELS_DIR    = Path(__file__).parent.parent / "models"
 MODELS_DIR.mkdir(parents=True, exist_ok=True)
 
-from src.feature_engineering import get_feature_cols, get_ibc_feature_cols
+from src.training.feature_engineering import get_feature_cols, get_ibc_feature_cols
 
 # Hardcoded values : 
 # SKL_BASE = dict(n_estimators=200, learning_rate=0.05, max_depth=5, subsample=0.8, random_state=42)
@@ -75,7 +75,7 @@ def make_reg(model_name: str = "duration", **kw):
 def make_cls(**kw):
     if USE_LGB:
         import lightgbm as lgb
-        return lgb.LGBMClassifier(**{**_load_best_params("outcome"), **kw})
+        return lgb.LGBMClassifier(**{**_load_best_params("outcome"), "class_weight" : "balanced" , **kw})
     from sklearn.ensemble import GradientBoostingClassifier
     return GradientBoostingClassifier(**{**_SKL_FALLBACK, **kw})
 
@@ -172,23 +172,26 @@ def train_realisation(df):
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 def main():
-    print("="*60)
+    """
+    Orchestrator — runs whichever pipelines are active.
+
+    IBBI pipeline: active — trains on real ibbi_real.csv
+    NJDG pipeline: inactive — no real row-level data available yet
+    """
+    print("=" * 60)
     print("LitFin Risk Assessor — Model Training")
-    print("="*60)
-    njdg = pd.read_csv(PROCESSED_DIR / "njdg_features.csv")
-    ibc  = pd.read_csv(PROCESSED_DIR / "ibc_features.csv")
-    m = {}
-    m["duration"]     = train_duration(njdg)
-    m["outcome"]      = train_outcome(njdg)
-    m["realisation"]  = train_realisation(ibc)
-    print("\n── Summary ──────────────────────────────────────────")
-    for k,v in m.items(): print(f"  {k:15s}: {v}")
-    pd.DataFrame(m).T.to_csv(MODELS_DIR / "training_metrics.csv")
-    print(f"\n[train] Models saved to {MODELS_DIR}")
-    from src.calibration import calibrate_outcome_model
-    print("\n[train] Calibrating outcome model probabilities...")
-    calibrate_outcome_model()
+    print("=" * 60)
+
+    # ── IBBI pipeline (active) ────────────────────────────────────────────────
+    from src.pipelines.ibbi_pipeline import run as run_ibbi
+    run_ibbi()
+
+    # ── NJDG pipeline (inactive — no real data) ───────────────────────────────
+    # Uncomment when njdg_real.csv is available in data/raw/
+    #
+    # from src.pipelines.njdg_pipeline import run as run_njdg
+    # run_njdg()
+
 
 if __name__ == "__main__":
     main()
-    

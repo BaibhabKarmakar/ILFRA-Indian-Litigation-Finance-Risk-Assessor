@@ -40,7 +40,7 @@ def calibrate_outcome_model():
     Using them for calibration would overfit the calibration layer.
     A fresh 20% hold-out is the cleanest approach.
     """
-    from src.feature_engineering import get_feature_cols
+    from training.feature_engineering import get_feature_cols
 
     njdg = pd.read_csv(PROCESSED_DIR / "njdg_features.csv")
     fc = get_feature_cols()

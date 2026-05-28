@@ -62,6 +62,7 @@ from reportlab.platypus import (
     Table,
     TableStyle,
 )
+from src.genai.genai_utils import generate_risk_narrative
 
 # ── Brand colours ─────────────────────────────────────────────────────────────
 NAVY     = colors.HexColor("#0D1B2A")
@@ -572,6 +573,12 @@ def generate_assessment_report(
     story += _header_block(styles, ref, generated_at)
     story += _case_details_block(styles, case_inputs)
     story += _predictions_block(styles, predictions)
+    narrative_text = generate_risk_narrative(case_inputs, predictions)
+    story += [
+        Spacer(1, 6),
+        Paragraph("Risk Summary", styles["section_head"]),
+        Paragraph(narrative_text, styles["value"]),
+    ]
     story += _risk_factors_block(styles, risk_factors or [])
     story += _disclaimer_block(styles, data_source)
 
