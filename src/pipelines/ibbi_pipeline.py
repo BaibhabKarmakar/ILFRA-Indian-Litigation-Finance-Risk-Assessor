@@ -94,7 +94,7 @@ def _make_reg(model_name: str = "duration"):
 
 def _make_cls(model_name: str = "outcome"):
     if USE_LGB:
-        return lgb.LGBMClassifier(**_load_best_params(model_name))
+        return lgb.LGBMClassifier(**_load_best_params(model_name) , class_weight="balanced")
     from sklearn.ensemble import GradientBoostingClassifier
     return GradientBoostingClassifier(**_SKL_FALLBACK)
 
@@ -251,7 +251,7 @@ def calibrate_ibc_outcome(df: pd.DataFrame) -> None:
     for the Streamlit reliability diagram.
     """
     fc = get_ibc_outcome_feature_cols()
-    X  = df[fc].fillna(0).values
+    X  = df[fc].fillna(0)
     y  = df["favourable_outcome"].values
 
     raw_model_path = MODELS_DIR / "ibc_outcome_model.pkl"

@@ -32,6 +32,7 @@ import json
 import logging
 import os
 import re
+import socket
 import time
 from typing import Optional
 
@@ -81,6 +82,13 @@ CANONICAL_COLUMNS: list[str] = [
 
 
 # ── Internal HTTP helper ──────────────────────────────────────────────────────
+def is_connected():
+    try:
+        socket.setdefaulttimeout(3)
+        socket.getaddrinfo("api-inference.huggingface.co", 443)
+        return True
+    except OSError:
+        return False
 
 def _hf_generate(prompt: str, max_new_tokens: int = 512) -> Optional[str]:
     """
@@ -339,7 +347,10 @@ def normalise_company_names(names: list[str]) -> dict[str, str]:
 
     if not names:
         return fallback
-
+    
+    if not is_connected():
+        logger.debug("[genai] normalise_company_names: no network — using identity mapping.")
+        return fallback
     # Deduplicate before sending to avoid wasting tokens on exact duplicates
     unique_names = list(dict.fromkeys(names))  # preserves order, removes exact dupes
 
