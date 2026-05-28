@@ -148,6 +148,17 @@ def build_ibc_features(df: pd.DataFrame, fit: bool = True,
 
     df["log_admitted_claim"] = np.log1p(df["admitted_claim_cr"])
 
+    # Log-scale liquidation value
+    df["log_liquidation_value"] = np.log1p(df["liquidation_value"].fillna(0))
+
+    # How underwater are assets vs claims — strong realisation signal
+    df["claim_to_liquidation_ratio"] = (
+        df["admitted_claim_cr"] / df["liquidation_value"].clip(lower=0.01)
+    ).clip(upper=100).fillna(1.0)
+
+    # Large case flag — cases above 500 Cr behave structurally differently
+    df["is_large_case"] = (df["admitted_claim_cr"] > 500).astype(int)
+
     # Creditor/applicant ratio — handle missing gracefully
     if "resolution_applicants_received" in df.columns and "no_of_financial_creditors" in df.columns:
         df["applicants_per_creditor"] = (
@@ -195,6 +206,9 @@ def get_ibc_feature_cols() -> list[str]:
     """
     return [
         "log_admitted_claim",
+        "log_liquidation_value",
+        "claim_to_liquidation_ratio",
+        "is_large_case",
         "duration_days",
         "favourable_outcome",
         "no_of_financial_creditors",
@@ -217,6 +231,9 @@ def get_ibc_duration_feature_cols() -> list[str]:
     """
     return [
         "log_admitted_claim",
+        "log_liquidation_value",
+        "claim_to_liquidation_ratio",
+        "is_large_case",
         "no_of_financial_creditors",
         "resolution_applicants_received",
         "applicants_per_creditor",
@@ -237,6 +254,9 @@ def get_ibc_outcome_feature_cols() -> list[str]:
     """
     return [
         "log_admitted_claim",
+        "log_liquidation_value",
+        "claim_to_liquidation_ratio",
+        "is_large_case",
         "no_of_financial_creditors",
         "resolution_applicants_received",
         "applicants_per_creditor",
@@ -248,7 +268,7 @@ def get_ibc_outcome_feature_cols() -> list[str]:
     ]
 
 
-# ── Entry point ───────────────────────────────────────────────────────────────
+# ── Entry point───────────────────────────────────────────────────────────────
 # main() is intentionally removed.
 # Feature engineering is now called directly by the pipeline files:
 #   src/pipelines/ibbi_pipeline.py  — active, uses ibbi_real.csv

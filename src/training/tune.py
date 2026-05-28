@@ -25,8 +25,8 @@ from sklearn.metrics import roc_auc_score, mean_absolute_error
 
 optuna.logging.set_verbosity(optuna.logging.WARNING)  # suppress per-trial noise
 
-PROCESSED_DIR = Path(__file__).parent.parent.parent / "data" / "processed"
-MODELS_DIR    = Path(__file__).parent.parent.parent / "models"
+PROCESSED_DIR = Path(__file__).parent.parent / "data" / "processed"
+MODELS_DIR    = Path(__file__).parent.parent / "models"
 MODELS_DIR.mkdir(parents=True, exist_ok=True)
 
 N_TRIALS = 40      # Optuna trials per model — increase to 80 for real data
@@ -93,7 +93,7 @@ def _objective_duration(trial: optuna.Trial, X: np.ndarray, y: np.ndarray) -> fl
     kf = KFold(n_splits=N_FOLDS, shuffle=True, random_state=SEED)
     maes = []
     for train_idx, val_idx in kf.split(X):
-        X_tr, X_val = X.iloc[train_idx], X.iloc[val_idx]
+        X_tr, X_val = X[train_idx], X[val_idx]
         y_tr, y_val = y[train_idx], y[val_idx]
         m = lgb.LGBMRegressor(**params)
         m.fit(X_tr, y_tr,
@@ -114,7 +114,7 @@ def _objective_realisation(trial: optuna.Trial, X: np.ndarray, y: np.ndarray) ->
     kf = KFold(n_splits=N_FOLDS, shuffle=True, random_state=SEED)
     maes = []
     for train_idx, val_idx in kf.split(X):
-        X_tr, X_val = X.iloc[train_idx], X.iloc[val_idx]
+        X_tr, X_val = X[train_idx], X[val_idx]
         y_tr, y_val = y[train_idx], y[val_idx]
         m = lgb.LGBMRegressor(**params)
         m.fit(X_tr, y_tr,
@@ -162,8 +162,8 @@ def main():
     fc_njdg = get_feature_cols()
     fc_ibc  = get_ibc_feature_cols()
 
-    X_njdg = njdg[fc_njdg].fillna(0)   
-    X_ibc  = ibc[fc_ibc].fillna(0)  
+    X_njdg = njdg[fc_njdg].fillna(0)
+    X_ibc  = ibc[fc_ibc].fillna(0)
 
     best_params = {}
     all_trials  = []
@@ -190,7 +190,7 @@ def main():
 
     # 3. Realisation regressor  (IBC only — filter to rows with realisation_pct)
     ibc_real = ibc[ibc["realisation_pct"].notna()].copy()
-    X_real = ibc_real[fc_ibc].fillna(0)
+    X_real = ibc_real[fc_ibc].fillna(0).values
     y_real = ibc_real["realisation_pct"].values
     params_real, study_real = tune_model(
         "Realisation regressor", _objective_realisation, X_real, y_real

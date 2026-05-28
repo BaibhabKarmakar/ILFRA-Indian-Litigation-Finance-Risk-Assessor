@@ -94,7 +94,7 @@ def _make_reg(model_name: str = "duration"):
 
 def _make_cls(model_name: str = "outcome"):
     if USE_LGB:
-        return lgb.LGBMClassifier(**_load_best_params(model_name) , class_weight="balanced")
+        return lgb.LGBMClassifier(**{**_load_best_params(model_name), "is_unbalance": True})
     from sklearn.ensemble import GradientBoostingClassifier
     return GradientBoostingClassifier(**_SKL_FALLBACK)
 
@@ -215,13 +215,12 @@ def train_ibc_outcome(df: pd.DataFrame) -> dict:
     Target: favourable_outcome
     Features: get_ibc_outcome_feature_cols() — excludes favourable_outcome
               and duration_days (leaky at assessment time).
-    Trained on ALL cases (not just closed) — ongoing cases have a known
-    favourable_outcome=0 placeholder but that's acceptable here since
-    the model is predicting at assessment time.
+    Trained on all closed cases — IBBI quarterly data only contains
+    resolved cases, so every row has a definitive favourable_outcome label.
     """
     fc = get_ibc_outcome_feature_cols()
 
-    X, y = df[fc].fillna(0), df["favourable_outcome"]
+    X, y = df[fc].fillna(0), df["favourable_outcome"].values
     Xtr, Xte, ytr, yte = train_test_split(
         X, y, test_size=0.2, random_state=SEED, stratify=y
     )
@@ -241,7 +240,7 @@ def train_ibc_outcome(df: pd.DataFrame) -> dict:
 
     return {"auc": round(auc, 3)}
 
-
+'''
 # ── Step 4: Calibration ───────────────────────────────────────────────────────
 
 def calibrate_ibc_outcome(df: pd.DataFrame) -> None:
@@ -259,8 +258,8 @@ def calibrate_ibc_outcome(df: pd.DataFrame) -> None:
         raise FileNotFoundError(
             "ibc_outcome_model.pkl not found. Run train_ibc_outcome() first."
         )
+    
     from sklearn.calibration import CalibratedClassifierCV, calibration_curve
-    from sklearn.frozen import FrozenEstimator
 
     raw_model = joblib.load(raw_model_path)
 
@@ -269,14 +268,8 @@ def calibrate_ibc_outcome(df: pd.DataFrame) -> None:
         X, y, test_size=0.20, random_state=SEED + 1, stratify=y
     )
 
-    # sklearn 1.2+ uses FrozenEstimator instead of cv="prefit"
-    try:
-        frozen = FrozenEstimator(raw_model)
-        calibrated = CalibratedClassifierCV(frozen, method="isotonic")
-    except ImportError:
-        # Fallback for older sklearn versions
-        calibrated = CalibratedClassifierCV(raw_model, method="isotonic", cv="prefit")
-
+    from sklearn.frozen import FrozenEstimator
+    calibrated = CalibratedClassifierCV(FrozenEstimator(raw_model), method="isotonic")
     calibrated.fit(X_cal, y_cal)
     joblib.dump(calibrated, MODELS_DIR / "outcome_calibrated.pkl")
 
@@ -299,7 +292,8 @@ def calibrate_ibc_outcome(df: pd.DataFrame) -> None:
     ece_cal = _ece(y_cal, cal_proba)
     print(f"[ibbi_pipeline] Calibration ECE: {ece_raw:.4f} → {ece_cal:.4f} "
           f"({(ece_raw - ece_cal) / ece_raw * 100:.1f}% improvement)")
-
+          
+'''
 
 # ── Step 5: Realisation model ─────────────────────────────────────────────────
 
@@ -360,9 +354,11 @@ def run():
     print("\n── Outcome ───────────────────────────────────────────")
     metrics_out = train_ibc_outcome(df)
 
+    '''
     # 4. Calibration
     print("\n── Calibration ───────────────────────────────────────")
     calibrate_ibc_outcome(df)
+    '''
 
     # 5. Realisation
     print("\n── Realisation ───────────────────────────────────────")
