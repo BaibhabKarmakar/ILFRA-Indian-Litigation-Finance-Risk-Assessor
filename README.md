@@ -165,7 +165,7 @@ pip install -r requirements.txt
 Place IBBI quarterly `.xlsx` files into `data/raw/ibbi/`, verify they are parseable, then run:
 
 ```bash
-python check_ibbi_files.py
+python src/scripts/check_ibbi_files.py
 python src/ingestion/ibbi_channel.py
 ```
 
@@ -178,7 +178,7 @@ python src/data_ingestion.py
 ### 4. Engineer Features
 
 ```bash
-python src/feature_engineering.py
+python src/training/feature_engineering.py
 ```
 
 ### 5. Build the CBR Case Base
@@ -190,7 +190,7 @@ python src/cbr_case_base.py
 ### 6. Tune Hyperparameters *(recommended, ~5–10 min)*
 
 ```bash
-python src/tune.py
+python src/training/tune.py
 ```
 
 > Optional but strongly recommended before training on real data.
@@ -200,7 +200,7 @@ python src/tune.py
 Trains all three model families, computes SHAP explainers, and runs calibration automatically:
 
 ```bash
-python src/train.py
+python src/training/train.py
 ```
 
 This produces the following artefacts in `models/`:

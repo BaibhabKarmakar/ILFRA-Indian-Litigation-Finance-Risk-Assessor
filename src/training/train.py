@@ -75,7 +75,7 @@ def make_reg(model_name: str = "duration", **kw):
 def make_cls(**kw):
     if USE_LGB:
         import lightgbm as lgb
-        return lgb.LGBMClassifier(**{**_load_best_params("outcome"), **kw})
+        return lgb.LGBMClassifier(**{**_load_best_params("outcome"), "class_weight" : "balanced" , **kw})
     from sklearn.ensemble import GradientBoostingClassifier
     return GradientBoostingClassifier(**{**_SKL_FALLBACK, **kw})
 
