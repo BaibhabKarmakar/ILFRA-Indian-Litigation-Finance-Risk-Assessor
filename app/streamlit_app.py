@@ -1,12 +1,8 @@
 """
-app/streamlit_app.py — ILFRA Streamlit dashboard.
-
-Tab 1 — Case Assessment   : form, ML predictions, per-case SHAP waterfall,
-                             CBR similar precedents
-Tab 2 — Model Insights    : training metrics, SHAP global summary plots
-                             (replaces LightGBM feature importance),
-                             calibration reliability diagram
-Tab 3 — How It Works      : architecture overview and ethical guardrails
+ILFRA Streamlit Dashboard.
+Tab 1: Case Assessment (Inference, SHAP, and CBR Precedents)
+Tab 2: Model Insights (Training metrics, global SHAP importance, and calibration)
+Tab 3: How It Works (Pipeline architecture & ethics)
 """
 
 import sys, os
@@ -30,23 +26,18 @@ st.set_page_config(
 )
 
 
-# ── Model loading (cached) ────────────────────────────────────────────────────
+# Model loading
 
 @st.cache_resource
 def get_models():
     return load_models()
 
 
-# ── SHAP chart helpers ────────────────────────────────────────────────────────
+# SHAP chart helpers
 
 def _shap_waterfall_chart(shap_map: dict, title: str,
                            top_n: int = 12) -> go.Figure:
-    """
-    Renders a horizontal bar chart of per-case SHAP values.
-    Positive values (red) push the prediction higher.
-    Negative values (blue) push the prediction lower.
-    Only the top_n features by absolute magnitude are shown.
-    """
+    """Renders horizontal bar chart of top per-case SHAP values."""
     items = sorted(shap_map.items(), key=lambda x: abs(x[1]), reverse=True)[:top_n]
     features = [k for k, _ in items]
     values   = [v for _, v in items]
@@ -74,11 +65,7 @@ def _shap_waterfall_chart(shap_map: dict, title: str,
 
 def _shap_summary_chart(shap_csv_path: Path, title: str,
                          top_n: int = 15) -> go.Figure | None:
-    """
-    Loads the global mean-absolute-SHAP CSV saved by train.py and
-    renders a horizontal bar chart for the Model Insights tab.
-    Returns None if the file doesn't exist yet.
-    """
+    """Renders global mean-absolute-SHAP importance chart from training output CSV."""
     if not shap_csv_path.exists():
         return None
 
@@ -105,7 +92,7 @@ def _shap_summary_chart(shap_csv_path: Path, title: str,
     return fig
 
 
-# ── Page layout ───────────────────────────────────────────────────────────────
+# Page layout
 
 st.title("⚖️ ILFRA — Indian Litigation Finance Risk Assessor")
 st.caption("ML-powered advisory tool for evaluating civil and commercial litigation risk in India.")
@@ -160,12 +147,6 @@ with tab1:
             respondent_is_govt = st.checkbox("Respondent is Government")
             respondent_is_psu  = st.checkbox("Respondent is PSU")
 
-            st.subheader("IBC / Money Recovery")
-            num_creditors  = st.number_input("No. of Financial Creditors",     1, 500,  1)
-            num_applicants = st.number_input("Resolution Applicants Received", 0, 50,   0)
-            ip_changed     = st.checkbox("IP Changed During CIRP")
-            lit_pending    = st.checkbox("Litigation Pending")
-
         submitted = st.form_submit_button("🔍 Assess Risk", width="stretch")
 
     if submitted:
@@ -184,10 +165,6 @@ with tab1:
             "claimant_lawyer_win_rate":     lawyer_win_rate,
             "respondent_is_govt":           respondent_is_govt,
             "respondent_is_psu":            respondent_is_psu,
-            "no_of_financial_creditors":    num_creditors,
-            "resolution_applicants_received": num_applicants,
-            "ip_changed":                   ip_changed,
-            "litigation_pending":           lit_pending,
         }
 
         with st.spinner("Running assessment..."):
@@ -198,7 +175,7 @@ with tab1:
                 st.error(f"Assessment failed: {e}")
                 st.stop()
 
-        # ── KPI cards ─────────────────────────────────────────────────────────
+        # KPI cards
         st.divider()
         st.subheader("Assessment Results")
 
@@ -218,7 +195,7 @@ with tab1:
             r2.metric("Realisation (P10)", f"{result['realisation_low']}%")
             r3.metric("Realisation (P90)", f"{result['realisation_high']}%")
 
-        # ── Duration and outcome charts ────────────────────────────────────────
+        # Plots
         c1, c2 = st.columns(2)
         with c1:
             fig_dur = go.Figure(go.Bar(
@@ -252,7 +229,7 @@ with tab1:
             fig_out.update_layout(height=280)
             st.plotly_chart(fig_out, use_container_width=True)
 
-        # ── Per-case SHAP explanations ─────────────────────────────────────────
+        # Per-case SHAP
         shap = result.get("shap", {})
         has_shap = any(v is not None for v in shap.values())
 
@@ -295,7 +272,7 @@ with tab1:
                 icon="ℹ️",
             )
 
-        # ── CBR similar precedents ─────────────────────────────────────────────
+        # CBR Precedents
         cbr = result.get("cbr", {})
         if cbr.get("similar_cases"):
             st.divider()
@@ -338,7 +315,7 @@ with tab2:
     st.header("📊 Model Insights & Feature Importance")
 
     try:
-        # ── Training metrics ───────────────────────────────────────────────────
+        # Training metrics
         metrics_path = MODELS_DIR / "training_metrics.csv"
         if metrics_path.exists():
             metrics_df = pd.read_csv(metrics_path, index_col=0)
@@ -349,10 +326,10 @@ with tab2:
             )
             st.divider()
 
-        # ── SHAP global summary (preferred over LightGBM importance) ──────────
+        # Global SHAP summary
         shap_files = {
-            "Outcome":      MODELS_DIR / "outcome_shap_values.csv",
-            "Duration":     MODELS_DIR / "duration_shap_values.csv",
+            "Outcome":      MODELS_DIR / "ibc_outcome_shap_values.csv",
+            "Duration":     MODELS_DIR / "ibc_duration_shap_values.csv",
             "Realisation":  MODELS_DIR / "realisation_shap_values.csv",
         }
 
@@ -361,11 +338,8 @@ with tab2:
         if shap_available:
             st.subheader("Global Feature Importance — SHAP (Mean |SHAP Value|)")
             st.caption(
-                "SHAP-based global importance measures each feature's average "
-                "contribution to predictions across all training cases. "
-                "This is more reliable than LightGBM's gain-based importance "
-                "because it is measured in the model's output units and accounts "
-                "for feature interactions."
+                "SHAP global feature importance measures the average impact of each feature on predictions. "
+                "This is more reliable than traditional split-based importance since it is measured in actual prediction units."
             )
             for model_name, shap_path in shap_files.items():
                 fig = _shap_summary_chart(
@@ -377,7 +351,7 @@ with tab2:
                     st.divider()
 
         else:
-            # ── Fallback: LightGBM native importance ───────────────────────────
+            # Fallback: LightGBM native importance
             st.subheader("Feature Importance (LightGBM native)")
             st.caption(
                 "SHAP explainers not found. Showing LightGBM gain-based importance. "
@@ -409,7 +383,7 @@ with tab2:
                 )
                 st.plotly_chart(fig, use_container_width=True)
 
-        # ── Calibration reliability diagram ───────────────────────────────────
+        # Calibration diagram
         raw_path = MODELS_DIR / "calibration_curve_raw.csv"
         cal_path = MODELS_DIR / "calibration_curve_cal.csv"
 

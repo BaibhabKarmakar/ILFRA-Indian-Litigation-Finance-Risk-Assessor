@@ -1,8 +1,6 @@
 """
-src/predict.py
---------------
-Loads trained models and encoders, takes a case input dict,
-and returns structured risk assessment output.
+Inference module for ILFRA.
+Loads models, encoders, runs predictions, and retrieves CBR precedents.
 """
 
 import sys, os
@@ -39,7 +37,7 @@ def _run_cbr(case: dict, query_njdg: np.ndarray, query_ibc: np.ndarray,
     return {"similar_cases": similar, "adapted": adapted}
 
 def _load(name: str):
-    """Internal helper to load a pickled model or encoder from the models directory."""
+    """Loads a pkl file from the models directory."""
     p = MODELS_DIR / name
     if not p.exists():
         raise FileNotFoundError(
@@ -56,11 +54,8 @@ def _load_optional(name: str):
 
 def load_models():
     """
-    Loads all available models and encoders.
-
-    IBBI models (duration, outcome, realisation) are required.
-    NJDG models are optional — loaded if present, None otherwise.
-    predict_case() handles None models gracefully.
+    Loads all models and encoders. 
+    IBBI is required; NJDG models/explainers are optional and fall back to None.
     """
     def _require(name: str):
         p = MODELS_DIR / name
@@ -88,8 +83,10 @@ def load_models():
         "duration_q90":     _load_optional("duration_q90.pkl"),
         "njdg_encoders":    _load_optional("njdg_encoders.pkl"),
 
-        # Calibrated outcome (optional — used if available)
-        "outcome_calibrated": _load_optional("outcome_calibrated.pkl"),
+        # SHAP explainers — optional, None if not yet generated
+        "shap_duration":     _load_optional("ibc_duration_shap_explainer.pkl"),
+        "shap_outcome":      _load_optional("ibc_outcome_shap_explainer.pkl"),
+        "shap_realisation":  _load_optional("realisation_shap_explainer.pkl"),
     }
 
 
@@ -117,30 +114,30 @@ COURT_AVG_WIN_RATE = {
 
 
 def _encode_col(value: str, encoder, fallback=None):
-    """
-    Safely encodes a categorical string feature for inference.
-    If the value was not seen during training, returns a fallback category to prevent crashes.
-    """
+    """Encodes categorical string features. Falls back to a known class if unseen to avoid crashes."""
     known = set(encoder.classes_)
     v = value if value in known else (fallback or encoder.classes_[0])
     return int(encoder.transform([v])[0])
 
-
+def _compute_shap(explainer, X_df: pd.DataFrame, is_classifier: bool = False) -> dict | None:
+    """Computes SHAP values for a single case, sorted by impact. Returns None on failure."""
+    if explainer is None:
+        return None
+    try:
+        sv = explainer(X_df)
+        values = sv.values[0]           # single row → shape (features,) or (features, 2)
+        if values.ndim == 2:
+            values = values[:, 1]       # class-1 slice for binary classifier
+        feature_names = X_df.columns.tolist()
+        shap_map = dict(zip(feature_names, values.tolist()))
+        return dict(sorted(shap_map.items(), key=lambda x: abs(x[1]), reverse=True))
+    except Exception:
+        return None
+    
 def predict_case(case: dict, models: dict) -> dict:
     """
-    Runs inference for a given legal case.
-
-    All cases now go through the IBBI model pipeline since that's
-    what's trained on real data. NJDG models are used for duration
-    only if available (optional).
-
-    Args:
-        case: Dictionary with keys matching Streamlit form fields.
-        models: Dictionary of loaded pre-trained models and encoders.
-
-    Returns:
-        Structured assessment dict with duration, outcome, realisation,
-        risk score, recommendation, and CBR precedents.
+    Main inference entry point. 
+    Processes case details, runs LightGBM predictions, computes SHAP, and retrieves CBR precedents.
     """
     ibc_enc = models["ibc_encoders"]
     claim   = float(case.get("claim_amount_lakhs", 10))
@@ -149,9 +146,6 @@ def predict_case(case: dict, models: dict) -> dict:
     is_ibc   = "IBC" in case.get("case_type", "") or "Liquidation" in case.get("case_type", "")
     is_money = case.get("case_type", "") == "Money Recovery"
 
-    num_creditors  = int(case.get("no_of_financial_creditors", 1))
-    num_applicants = int(case.get("resolution_applicants_received", 1))
-
     _status_map = {
         "CIRP (IBC)":        "Ongoing",
         "Liquidation (IBC)": "Liquidation Order",
@@ -159,50 +153,34 @@ def predict_case(case: dict, models: dict) -> dict:
     }
     resolution_status = _status_map.get(case.get("case_type", ""), "Ongoing")
 
-    # ── Outcome prediction (IBC outcome model) ────────────────────────────────
-    # Build IBC outcome feature row — excludes duration_days (unknown at assessment time)
+    # 1. Outcome prediction (LightGBM classifier)
+    # Features for the classifier (excludes duration as it is unknown at assessment)
     fc_outcome = get_ibc_outcome_feature_cols()
     outcome_row = {
-        "log_admitted_claim":              np.log1p(claim / 100),
-        "log_liquidation_value":           0.0,   # unknown at assessment time — neutral default
-        "claim_to_liquidation_ratio":      1.0,   # neutral default — no liquidation value known yet
-        "is_large_case":                   int(claim > 50000),  # claim in lakhs; 50000L = 500Cr
-        "no_of_financial_creditors":       num_creditors,
-        "resolution_applicants_received":  num_applicants,
-        "applicants_per_creditor":         num_applicants / max(num_creditors, 1),
-        "ip_changed":                      int(case.get("ip_changed", False)),
-        "litigation_pending":              int(case.get("litigation_pending", False)),
-        "sector_enc":                      _encode_col(
-            case.get("sector", "Others"), ibc_enc["ibc_sector"]
-        ),
-        "bench_enc":      0,
-        "admission_year": int(case.get("filing_year", 2021)),
+        "log_admitted_claim":         np.log1p(claim / 100),
+        "log_liquidation_value":      0.0,
+        "claim_to_liquidation_ratio": 1.0,
+        "is_large_case":              int(claim > 50000),
+        "admission_year":             int(case.get("filing_year", 2021)),
     }
     X_outcome = pd.DataFrame([outcome_row])[fc_outcome]
 
-    # Use calibrated model if available
+    # Predict using calibrated outcome model if available
     outcome_model = models["outcome"]
     p_favour = float(outcome_model.predict_proba(X_outcome)[0][1])
 
-    # ── Duration prediction (IBC duration model) ──────────────────────────────
+    # 2. Duration prediction
     fc_duration = get_ibc_duration_feature_cols()
     duration_row = {
-        "log_admitted_claim":              outcome_row["log_admitted_claim"],
-        "log_liquidation_value":           outcome_row["log_liquidation_value"],
-        "claim_to_liquidation_ratio":      outcome_row["claim_to_liquidation_ratio"],
-        "is_large_case":                   outcome_row["is_large_case"],
-        "no_of_financial_creditors":       num_creditors,
-        "resolution_applicants_received":  num_applicants,
-        "applicants_per_creditor":         outcome_row["applicants_per_creditor"],
-        "ip_changed":                      outcome_row["ip_changed"],
-        "litigation_pending":              outcome_row["litigation_pending"],
-        "sector_enc":                      outcome_row["sector_enc"],
-        "bench_enc":                       0,
-        "admission_year":                  outcome_row["admission_year"],
+        "log_admitted_claim":         outcome_row["log_admitted_claim"],
+        "log_liquidation_value":      outcome_row["log_liquidation_value"],
+        "claim_to_liquidation_ratio": outcome_row["claim_to_liquidation_ratio"],
+        "is_large_case":              outcome_row["is_large_case"],
+        "admission_year":             outcome_row["admission_year"],
     }
     X_duration = pd.DataFrame([duration_row])[fc_duration]
 
-    # Duration in days from IBC model → convert to months for display
+    # Target is in days, convert to months for display
     dur_days_p50 = float(models["ibc_duration"].predict(X_duration)[0])
     dur_days_p10 = float(models["ibc_duration_q10"].predict(X_duration)[0])
     dur_days_p90 = float(models["ibc_duration_q90"].predict(X_duration)[0])
@@ -211,7 +189,7 @@ def predict_case(case: dict, models: dict) -> dict:
     dur_p10 = dur_days_p10 / 30
     dur_p90 = dur_days_p90 / 30
 
-    # ── Realisation prediction (IBC / money recovery only) ────────────────────
+    # 3. Realisation prediction (only for IBC or Money Recovery)
     realisation = None
     if is_ibc or is_money:
         fc_real = get_ibc_feature_cols()
@@ -233,15 +211,16 @@ def predict_case(case: dict, models: dict) -> dict:
         except Exception:
             pass
 
-    # ── Risk score ────────────────────────────────────────────────────────────
+    # 4. Composite Risk Score
+    # Combines outcome prob (40%), duration (30%), and realisation (30%)
     risk_score = round(
         (p_favour * 40)
-        + (max(0, 1 - dur_p50 / 48) * 30)   # 48 months = IBC statutory outer limit
+        + (max(0, 1 - dur_p50 / 48) * 30)   # 48 months is the statutory IBC outer limit
         + ((realisation["p50"] / 100 if realisation else 0.5) * 30),
         1,
     )
 
-    # ── CBR ───────────────────────────────────────────────────────────────────
+    # 5. Retrieve CBR precedents
     try:
         fc_ibc_full = get_ibc_feature_cols()
         real_row_full = {
@@ -260,6 +239,13 @@ def predict_case(case: dict, models: dict) -> dict:
     except Exception as e:
         cbr_result = {"similar_cases": [], "adapted": {}, "error": str(e)}
 
+    # 6. Compute SHAP explanations
+    shap_outcome      = _compute_shap(models.get("shap_outcome"),      X_outcome,  is_classifier=True)
+    shap_duration     = _compute_shap(models.get("shap_duration"),     X_duration, is_classifier=False)
+    shap_realisation  = None
+    if realisation is not None:
+        shap_realisation = _compute_shap(models.get("shap_realisation"), X_real, is_classifier=False)
+
     return {
         "duration_months":  round(max(1, dur_p50), 1),
         "duration_low":     round(max(1, dur_p10), 1),
@@ -273,14 +259,16 @@ def predict_case(case: dict, models: dict) -> dict:
         "recommendation":   _recommendation(p_favour, dur_p50, realisation),
         "data_source":      "IBC" if (is_ibc or is_money) else "NJDG",
         "cbr":              cbr_result,
+        "shap": {
+            "outcome":      shap_outcome,
+            "duration":     shap_duration,
+            "realisation":  shap_realisation,
+        },
     }
 
 
 def _recommendation(p_fav: float, dur_months: float, realisation: dict | None) -> str:
-    """
-    Maps model outputs (probability of favourability and expected duration) 
-    to a human-readable risk recommendation tier for litigation funding.
-    """
+    """Classifies risk profile based on expected duration and win rate."""
     if p_fav >= 0.65 and dur_months <= 36:
         return "Strong Candidate"
     elif p_fav >= 0.50 and dur_months <= 60:

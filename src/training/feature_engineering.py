@@ -121,7 +121,7 @@ def get_feature_cols() -> list[str]:
     """
     return [
         "case_type_enc", "court_enc", "court_hierarchy", "state_enc",
-        "sector_enc", "filing_year", "filing_quarter", "case_age_months",
+         "filing_year", "filing_quarter", "case_age_months",
         "log_claim_amount", "claim_bucket_enc",
         "claimant_lawyer_win_rate", "respondent_is_govt", "respondent_is_psu",
         "num_prior_adjournments", "adjournment_density",
@@ -211,13 +211,6 @@ def get_ibc_feature_cols() -> list[str]:
         "is_large_case",
         "duration_days",
         "favourable_outcome",
-        "no_of_financial_creditors",
-        "resolution_applicants_received",
-        "applicants_per_creditor",
-        "ip_changed",
-        "litigation_pending",
-        "sector_enc",
-        "bench_enc",
         "admission_year",
     ]
 
@@ -234,13 +227,6 @@ def get_ibc_duration_feature_cols() -> list[str]:
         "log_liquidation_value",
         "claim_to_liquidation_ratio",
         "is_large_case",
-        "no_of_financial_creditors",
-        "resolution_applicants_received",
-        "applicants_per_creditor",
-        "ip_changed",
-        "litigation_pending",
-        "sector_enc",
-        "bench_enc",
         "admission_year",
     ]
 
@@ -257,16 +243,8 @@ def get_ibc_outcome_feature_cols() -> list[str]:
         "log_liquidation_value",
         "claim_to_liquidation_ratio",
         "is_large_case",
-        "no_of_financial_creditors",
-        "resolution_applicants_received",
-        "applicants_per_creditor",
-        "ip_changed",
-        "litigation_pending",
-        "sector_enc",
-        "bench_enc",
         "admission_year",
     ]
-
 
 # ── Entry point───────────────────────────────────────────────────────────────
 # main() is intentionally removed.

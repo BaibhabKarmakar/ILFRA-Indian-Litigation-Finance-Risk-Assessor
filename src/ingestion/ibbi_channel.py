@@ -1,28 +1,7 @@
 """
-src/ingestion/ibbi_channel.py
-------------------------------
-IBBI data channel — the orchestrator.
-
-This is the single entry point for all IBBI data regardless of
-file format. It:
-    1. Scans the IBBI source folder for files
-    2. Detects each file's format (.xlsx, .pdf, etc.)
-    3. Routes to the correct parser
-    4. Combines all parsed data into one DataFrame
-    5. Deduplicates across quarters
-    6. Derives features
-    7. Saves to data/raw/ibbi_real.csv
-
-If IBBI releases data in a new format in the future,
-add a new parser in parsers/ and register it in PARSERS below.
-No other file needs to change.
-
-Usage:
-    python src/ingestion/ibbi_channel.py
-
-    Or programmatically:
-        from src.ingestion.ibbi_channel import run
-        df = run()
+IBBI data channel orchestrator.
+Scans source files, parses them via XLSX/PDF parsers, combines, 
+deduplicates, and saves features to data/raw/ibbi_real.csv.
 """
 
 import sys
@@ -35,7 +14,7 @@ from pathlib import Path
 
 from src.parsers import ibbi_excel, ibbi_pdf
 
-# ── Config ────────────────────────────────────────────────────────────────────
+# Config
 
 # Drop your downloaded IBBI quarterly files here
 IBBI_SOURCE_DIR = Path(__file__).parent.parent.parent / "data" / "raw" / "ibbi"
@@ -43,7 +22,7 @@ IBBI_SOURCE_DIR = Path(__file__).parent.parent.parent / "data" / "raw" / "ibbi"
 # Final cleaned output
 OUTPUT_PATH = Path(__file__).parent.parent.parent / "data" / "raw" / "ibbi_real.csv"
 
-# ── Format registry ───────────────────────────────────────────────────────────
+# Format registry
 # Maps file extension → parser module.
 # To add a new format, add one line here and create the parser file.
 
@@ -53,7 +32,7 @@ PARSERS = {
     ".pdf":  ibbi_pdf,
 }
 
-# ── Unified output schema ─────────────────────────────────────────────────────
+# Unified output schema
 # Every parser must return a DataFrame with exactly these columns.
 # Any extra columns from a parser are dropped here.
 
@@ -71,7 +50,7 @@ SCHEMA = [
 ]
 
 
-# ── Pipeline steps ────────────────────────────────────────────────────────────
+# Pipeline steps
 
 def _scan_files(source_dir: Path) -> dict[str, list[Path]]:
     """
@@ -148,12 +127,8 @@ def _route_and_parse(found: dict[str, list[Path]]) -> pd.DataFrame:
 
 def _deduplicate(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Each quarterly file contains a 'Part A: Prior Period' section
-    repeating cases from earlier quarters. This removes them by
-    keeping the most recent record per unique case.
-
-    Key: company_name + cirp_start_date — IBBI doesn't publish
-    unique case IDs in the Excel files.
+    Deduplicates records across quarters. Keeps only the latest entry per unique case.
+    Uniqueness is keyed on (company_name + cirp_start_date) since IBBI lacks global case IDs.
     """
     before = len(df)
     df = df.drop_duplicates(
@@ -266,7 +241,7 @@ def _print_summary(df: pd.DataFrame) -> None:
     print(f"\n  Output columns     : {list(df.columns)}")
 
 
-# ── Public API ────────────────────────────────────────────────────────────────
+# Public API
 
 def run(source_dir: Path = IBBI_SOURCE_DIR,
         output_path: Path = OUTPUT_PATH) -> pd.DataFrame:
@@ -325,7 +300,7 @@ def run(source_dir: Path = IBBI_SOURCE_DIR,
     return df
 
 
-# ── Entry point ───────────────────────────────────────────────────────────────
+# Entry point
 
 if __name__ == "__main__":
     run()

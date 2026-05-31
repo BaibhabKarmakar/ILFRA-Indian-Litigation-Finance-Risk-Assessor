@@ -1,18 +1,6 @@
 """
-src/calibration.py
-------------------
-Calibrates the outcome classifier's predicted probabilities using
-isotonic regression so that "P(favourable) = 0.7" genuinely means
-~70% of such cases have a favourable outcome.
-
-Run standalone after train.py:
-    python src/calibration.py
-
-Or called automatically from the updated train.py main().
-
-Outputs:
-    models/outcome_calibrated.pkl   — CalibratedClassifierCV wrapper
-    models/calibration_curve.csv    — for reliability diagram in Streamlit
+Outcome model probability calibration using Isotonic Regression.
+This scales predicted probabilities to align with actual empirical frequencies.
 """
 
 import sys, os
@@ -32,13 +20,8 @@ SEED = 42
 
 def calibrate_outcome_model():
     """
-    Loads the raw trained outcome model and fits an isotonic calibration
-    layer on a held-out calibration set (20% of NJDG data).
-
-    Why a separate calibration set and not the CV folds?
-    Because the model already saw those folds during early-stopping.
-    Using them for calibration would overfit the calibration layer.
-    A fresh 20% hold-out is the cleanest approach.
+    Fits an isotonic calibration layer using a fresh 20% hold-out set.
+    We avoid using the training CV folds to prevent overfitting the calibration mapping.
     """
     from training.feature_engineering import get_feature_cols
 
@@ -101,11 +84,7 @@ def calibrate_outcome_model():
 def _expected_calibration_error(y_true: np.ndarray,
                                  y_prob: np.ndarray,
                                  n_bins: int = 10) -> float:
-    """
-    Computes Expected Calibration Error (ECE) — the weighted average
-    gap between predicted probability and actual frequency across bins.
-    ECE near 0 means the model is well-calibrated.
-    """
+    """Computes Expected Calibration Error (ECE) as the weighted average predicted-vs-actual frequency gap."""
     bins = np.linspace(0, 1, n_bins + 1)
     ece = 0.0
     for i in range(n_bins):

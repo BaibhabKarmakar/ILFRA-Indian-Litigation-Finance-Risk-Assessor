@@ -1,29 +1,7 @@
 """
-src/genai/genai_utils.py
-------------------------
-GenAI-powered utilities for ILFRA's data ingestion and reporting pipeline.
-
-Three functions, each calling the HuggingFace Inference API:
-
-  1. detect_columns(raw_headers)         → maps messy Excel headers to canonical schema
-  2. normalise_company_names(names)      → deduplicates corporate debtor name variants
-  3. generate_risk_narrative(case, preds) → writes a plain-English risk summary for PDF
-
-Design principles:
-  - GenAI handles ambiguity; deterministic code handles numbers and decisions.
-  - Every function has a safe fallback — the pipeline never crashes due to a failed
-    API call. Column detection falls back to an empty mapping (caller handles missing
-    columns gracefully). Normalisation falls back to the original names. Narrative
-    falls back to a generic template string.
-  - All calls are synchronous and stateless — no conversation history needed.
-  - The HF token is read from the environment (.env file via python-dotenv).
-
-Environment variables required (.env):
-  HF_API_TOKEN=hf_xxxxxxxxxxxxxxxxxxxx
-  HF_MODEL_ID=mistralai/Mistral-7B-Instruct-v0.3   # optional override
-
-Install dependencies:
-  pip install requests python-dotenv
+GenAI utility functions.
+Calls the HuggingFace Inference API for smart column mapping, name normalisation, and risk narrative generation.
+Includes robust local fallbacks to ensure the pipeline doesn't crash on network or API failures.
 """
 
 from __future__ import annotations
@@ -43,7 +21,7 @@ load_dotenv()
 
 logger = logging.getLogger(__name__)
 
-# ── Configuration ─────────────────────────────────────────────────────────────
+# Config
 
 HF_API_TOKEN: str = os.getenv("HF_API_TOKEN", "")
 HF_MODEL_ID: str = os.getenv(
@@ -56,7 +34,7 @@ REQUEST_TIMEOUT: int = 60          # seconds per request
 MAX_RETRIES: int = 3               # retry on model-loading (503) responses
 RETRY_WAIT: int = 20               # seconds to wait between retries (HF cold start)
 
-# ── Canonical IBBI schema ─────────────────────────────────────────────────────
+# Canonical IBBI schema
 # These are the exact column names the rest of the pipeline expects.
 # detect_columns() maps arbitrary Excel headers to these names.
 
@@ -81,7 +59,7 @@ CANONICAL_COLUMNS: list[str] = [
 ]
 
 
-# ── Internal HTTP helper ──────────────────────────────────────────────────────
+# Internal HTTP helpers
 def is_connected():
     try:
         socket.setdefaulttimeout(3)
@@ -195,44 +173,12 @@ def _extract_json(text: str) -> Optional[dict | list]:
     return None
 
 
-# ── 1. Smart column detection ─────────────────────────────────────────────────
+# 1. Column detection
 
 def detect_columns(raw_headers: list[str]) -> dict[str, str]:
     """
-    Maps raw Excel column headers to ILFRA's canonical schema using an LLM.
-
-    The IBBI quarterly Excels change column naming conventions across quarters:
-    "Admitted Amount of Claims (in Cr.)" → "admitted_claim_cr"
-    "% of Realisation"                   → "realisation_pct"
-    "Name of CD"                         → "company_name"
-    etc.
-
-    Deterministic string matching breaks across quarters. This function asks
-    the LLM to interpret headers semantically and return a JSON mapping.
-
-    Parameters
-    ----------
-    raw_headers : list of column header strings exactly as read from the Excel file.
-
-    Returns
-    -------
-    dict mapping raw_header → canonical_name for headers the model is confident about.
-    Unrecognised headers are omitted — the caller must handle missing columns.
-
-    Example
-    -------
-    >>> detect_columns(["Sr. No.", "Name of CD", "% of Realisation wrt Admitted Claims"])
-    {
-        "Sr. No.": "cirp_id",
-        "Name of CD": "company_name",
-        "% of Realisation wrt Admitted Claims": "realisation_pct"
-    }
-
-    Fallback
-    --------
-    Returns {} if the API call fails or the response cannot be parsed.
-    The caller (ibbi_excel.py) should handle an empty mapping gracefully
-    by logging a warning and skipping the file.
+    Uses HF Inference API to map messy raw Excel headers to the canonical database schema.
+    Returns a dict mapping raw_header -> canonical_name. Falls back to {} on failure.
     """
     canonical_list = "\n".join(f"  - {c}" for c in CANONICAL_COLUMNS)
     headers_str = json.dumps(raw_headers, indent=2)
@@ -296,52 +242,12 @@ JSON mapping:
     return validated
 
 
-# ── 2. Company name normalisation ─────────────────────────────────────────────
+# 2. Company name normalisation
 
 def normalise_company_names(names: list[str]) -> dict[str, str]:
     """
-    Normalises corporate debtor name variants to a single canonical form.
-
-    IBBI data across quarterly files uses inconsistent naming:
-    "Videocon Industries Ltd", "VIDEOCON INDUSTRIES LIMITED", "Videocon Ind. Ltd"
-    → all should map to "Videocon Industries Limited"
-
-    This deduplication is essential before training — duplicate rows with the same
-    company inflates the dataset and introduces label leakage.
-
-    Parameters
-    ----------
-    names : list of raw company name strings (may contain duplicates/variants).
-
-    Returns
-    -------
-    dict mapping each input name → its normalised canonical form.
-    Names that appear unique and clean are mapped to themselves.
-
-    Example
-    -------
-    >>> normalise_company_names([
-    ...     "Videocon Industries Ltd",
-    ...     "VIDEOCON INDUSTRIES LIMITED",
-    ...     "Jet Airways (India) Ltd",
-    ...     "JET AIRWAYS INDIA LIMITED",
-    ... ])
-    {
-        "Videocon Industries Ltd": "Videocon Industries Limited",
-        "VIDEOCON INDUSTRIES LIMITED": "Videocon Industries Limited",
-        "Jet Airways (India) Ltd": "Jet Airways India Limited",
-        "JET AIRWAYS INDIA LIMITED": "Jet Airways India Limited",
-    }
-
-    Fallback
-    --------
-    Returns {name: name for name in names} (identity mapping) if the API call fails.
-    This is safe — the pipeline continues with un-normalised names rather than crashing.
-
-    Performance note
-    ----------------
-    Send names in batches of 30–50 for best results. Very large lists (200+) may
-    exceed the model's context window and produce incomplete output.
+    Deduplicates and normalises inconsistent company names (e.g. Ltd -> Limited, Pvt -> Private).
+    Prevents label leakage before model training. Falls back to identity mapping.
     """
     fallback = {name: name for name in names}
 
@@ -408,35 +314,12 @@ JSON mapping:
     return result
 
 
-# ── 3. Dynamic risk narrative ─────────────────────────────────────────────────
+# 3. Dynamic risk narrative
 
 def generate_risk_narrative(case_inputs: dict, predictions: dict) -> str:
     """
-    Generates a 2–3 sentence plain-English risk narrative for the PDF report.
-
-    This replaces the static disclaimer boilerplate in the PDF with a case-specific
-    summary paragraph that a funder client can read without interpreting numbers.
-
-    Parameters
-    ----------
-    case_inputs  : dict — raw user-submitted case fields (same dict passed to predict_case)
-    predictions  : dict — model output dict (same flat schema as predict.py returns)
-
-    Returns
-    -------
-    A 2–3 sentence narrative string. Example:
-
-    "This Commercial Dispute filed in the Delhi High Court carries a moderate risk profile,
-    with the model estimating a 67% probability of a favourable outcome for the claimant
-    and an expected duration of 28 months. The estimated financial recovery range of
-    42–71% of the admitted claim, combined with a composite risk score of 61/100,
-    suggests this matter is a viable candidate for funding subject to legal due diligence.
-    Key risk factors include a high adjournment count and the absence of an interim order."
-
-    Fallback
-    --------
-    Returns a generic template string populated with the prediction values if the
-    API call fails. The PDF is never left with a blank narrative section.
+    Generates a plain-English, 2-3 sentence risk narrative summarizing the case assessment for the PDF report.
+    If the API call fails, falls back to a clean, template-populated text.
     """
     # Build a concise context string for the prompt
     case_type     = case_inputs.get("case_type", "legal dispute")
@@ -539,24 +422,12 @@ Write the 2–3 sentence narrative now:
     return fallback_narrative
 
 
-# ── Convenience batch wrapper ─────────────────────────────────────────────────
+# Batch wrapper
 
 def normalise_company_names_batched(
     names: list[str], batch_size: int = 40
 ) -> dict[str, str]:
-    """
-    Wrapper around normalise_company_names() that splits large name lists into
-    batches to avoid exceeding the model's context window.
-
-    Parameters
-    ----------
-    names      : full list of company name strings
-    batch_size : number of names per API call (default 40)
-
-    Returns
-    -------
-    Combined dict mapping all input names to their normalised forms.
-    """
+    """Batch wrapper around normalise_company_names to prevent token window overflow."""
     if not names:
         return {}
 
