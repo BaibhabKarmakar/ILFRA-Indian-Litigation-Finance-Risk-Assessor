@@ -43,13 +43,13 @@ def build_case_base():
     '''
     # IBC case base
     ibc_base = {
-        "features":         ibc[fc_ibc].fillna(0).values.astype(np.float32),
-        "feature_cols":     fc_ibc,
-        "realisation_pct":  ibc["realisation_pct"].values,
-        "resolution_status": ibc["resolution_status"].values if "resolution_status" in ibc.columns else None,
-        "duration_days":    ibc["duration_days"].values if "duration_days" in ibc.columns else None,
-        "sector":           ibc["sector"].values if "sector" in ibc.columns else None,
-        "cirp_id":          ibc["cirp_id"].values if "cirp_id" in ibc.columns else None,
+    "features":          ibc[fc_ibc].fillna(0).values.astype(np.float32),
+    "feature_cols":      fc_ibc,
+    "realisation_pct":   ibc["realisation_pct"].values,
+    "resolution_status": ibc["resolution_status"].values if "resolution_status" in ibc.columns else None,
+    "duration_days":     ibc["duration_days"].values if "duration_days" in ibc.columns else None,
+    "favourable":        ibc["favourable_outcome"].values if "favourable_outcome" in ibc.columns else None,
+    "cirp_id":           ibc["cirp_id"].values if "cirp_id" in ibc.columns else None,
     }
 
     case_base = { "ibc": ibc_base}

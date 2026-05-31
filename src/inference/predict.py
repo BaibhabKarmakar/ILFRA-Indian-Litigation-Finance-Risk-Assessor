@@ -152,14 +152,17 @@ def predict_case(case: dict, models: dict) -> dict:
         "Money Recovery":    "Resolution Plan Approved",
     }
     resolution_status = _status_map.get(case.get("case_type", ""), "Ongoing")
+    liq_val = float(case.get("liquidation_value_cr", 0))
+    log_liq = np.log1p(liq_val)
+    ratio   = min((claim / 100) / max(liq_val, 0.01), 100)
 
     # 1. Outcome prediction (LightGBM classifier)
     # Features for the classifier (excludes duration as it is unknown at assessment)
     fc_outcome = get_ibc_outcome_feature_cols()
     outcome_row = {
         "log_admitted_claim":         np.log1p(claim / 100),
-        "log_liquidation_value":      0.0,
-        "claim_to_liquidation_ratio": 1.0,
+        "log_liquidation_value":      log_liq,
+        "claim_to_liquidation_ratio": ratio,
         "is_large_case":              int(claim > 50000),
         "admission_year":             int(case.get("filing_year", 2021)),
     }

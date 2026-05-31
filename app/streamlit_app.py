@@ -107,64 +107,41 @@ with tab1:
     st.header("Case Assessment")
 
     with st.form("case_form"):
-        col1, col2, col3 = st.columns(3)
+        col1, col2 = st.columns(2)
 
         with col1:
-            st.subheader("Case Identity")
+            st.subheader("Case Details")
             case_type = st.selectbox("Case Type", [
-                "Civil Suit", "Money Recovery", "Commercial Dispute",
-                "Writ Petition", "CIRP (IBC)", "Liquidation (IBC)",
-                "Arbitration", "Injunction", "Other"
-            ])
-            court = st.selectbox("Court", [
-                "District Court", "High Court", "Supreme Court",
-                "Commercial Court", "City Civil Court", "Magistrate Court"
-            ])
-            state = st.selectbox("State", [
-                "Delhi", "Maharashtra", "Karnataka", "Tamil Nadu",
-                "West Bengal", "Gujarat", "Rajasthan", "Uttar Pradesh",
-                "Andhra Pradesh", "Telangana", "Other"
+                "CIRP (IBC)", "Liquidation (IBC)", "Money Recovery",
+                "Civil Suit", "Commercial Dispute", "Arbitration",
+                "Writ Petition", "Injunction", "Other"
             ])
             sector = st.selectbox("Sector", [
                 "Others", "Real Estate", "Manufacturing", "Banking & Finance",
                 "IT / Technology", "Energy", "Retail", "Healthcare",
                 "Infrastructure", "Agriculture"
             ])
+            filing_year = st.number_input("Admission Year", 2016, 2025, 2021)
 
         with col2:
-            st.subheader("Timeline & Process")
-            filing_year    = st.number_input("Filing Year",    2010, 2025, 2022)
-            filing_quarter = st.selectbox("Filing Quarter",    [1, 2, 3, 4])
-            case_age       = st.number_input("Case Age (months)", 0, 240, 18)
-            num_adjourn    = st.number_input("Prior Adjournments", 0, 100, 5)
-            has_interim    = st.checkbox("Has Interim Order")
-            senior_counsel = st.checkbox("Senior Counsel Appearing")
+            st.subheader("Financial Details")
+            claim_amount = st.number_input(
+                "Admitted Claim (₹ Crore)", 0.1, 10000.0, 100.0
+            )
 
-        with col3:
-            st.subheader("Financial & Party")
-            claim_amount       = st.number_input("Claim Amount (₹ Lakhs)", 0.1, 1000000.0, 50.0)
-            lawyer_win_rate    = st.slider("Claimant Lawyer Win Rate", 0.0, 1.0, 0.5, 0.05)
-            respondent_is_govt = st.checkbox("Respondent is Government")
-            respondent_is_psu  = st.checkbox("Respondent is PSU")
+            liquidation_value = st.number_input(
+                "Liquidation Value of Assets (₹ Crore)", 0.0, 10000.0, 50.0
+            )
 
-        submitted = st.form_submit_button("🔍 Assess Risk", width="stretch")
+        submitted = st.form_submit_button("🔍 Assess Risk", use_container_width=True)
 
     if submitted:
         case_input = {
-            "case_type":                    case_type,
-            "court":                        court,
-            "state":                        state,
-            "sector":                       sector,
-            "filing_year":                  filing_year,
-            "filing_quarter":               filing_quarter,
-            "case_age_months":              case_age,
-            "num_prior_adjournments":       num_adjourn,
-            "has_interim_order":            has_interim,
-            "represented_by_senior_counsel": senior_counsel,
-            "claim_amount_lakhs":           claim_amount,
-            "claimant_lawyer_win_rate":     lawyer_win_rate,
-            "respondent_is_govt":           respondent_is_govt,
-            "respondent_is_psu":            respondent_is_psu,
+            "case_type":          case_type,
+            "sector":             sector,
+            "filing_year":        filing_year,
+            "claim_amount_lakhs": claim_amount * 100,  # Cr → lakhs
+            "liquidation_value_cr":  liquidation_value 
         }
 
         with st.spinner("Running assessment..."):
@@ -306,6 +283,23 @@ with tab1:
                         f"Filed: {c.filing_year or '—'}"
                     )
                     st.divider()
+
+        # PDF Report Download
+        st.divider()
+        try:
+            from src.inference.report_generator import generate_assessment_report
+            pdf_bytes = generate_assessment_report(
+                case_inputs=case_input,
+                predictions=result,
+            )
+            st.download_button(
+                label="📄 Download PDF Report",
+                data=pdf_bytes,
+                file_name=f"ILFRA_Assessment_{result.get('data_source','IBC')}.pdf",
+                mime="application/pdf",
+            )
+        except Exception as e:
+            st.warning(f"PDF generation failed: {e}")
 
 
 # ══════════════════════════════════════════════════════════════════════════════

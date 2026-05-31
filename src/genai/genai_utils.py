@@ -39,25 +39,17 @@ RETRY_WAIT: int = 20               # seconds to wait between retries (HF cold st
 # detect_columns() maps arbitrary Excel headers to these names.
 
 CANONICAL_COLUMNS: list[str] = [
-    "cirp_id",                       # case / serial number
-    "company_name",                  # corporate debtor name
-    "sector",                        # industry sector
-    "bench",                         # NCLT bench (city)
-    "admission_date",                # date CIRP was admitted
-    "resolution_status",             # current status (Resolution Plan / Liquidation / etc.)
-    "duration_days",                 # days taken from admission to closure
-    "admitted_claim_cr",             # total admitted financial claims (₹ crore)
-    "liquidation_value_cr",          # liquidation value of assets (₹ crore)
-    "fair_value_cr",                 # fair value of assets (₹ crore)
-    "realisation_cr",                # amount actually realised (₹ crore)
-    "realisation_pct",               # realisation as % of admitted claims
-    "no_of_financial_creditors",     # count of financial creditors
-    "resolution_applicants_received",# number of resolution plans received
-    "ip_changed",                    # whether insolvency professional was replaced (0/1)
-    "litigation_pending",            # whether creditor litigation is ongoing (0/1)
-    "initiated_by",                  # who filed (Financial Creditor / Operational Creditor / Corporate Debtor)
+    "cirp_id",           # case / serial number
+    "company_name",      # corporate debtor name
+    "admission_date",    # date CIRP was admitted
+    "resolution_status", # current status (Resolution Plan / Liquidation / etc.)
+    "admitted_claim_cr", # total admitted financial claims (₹ crore)
+    "liquidation_value_cr", # liquidation value of assets (₹ crore)
+    "fair_value_cr",     # fair value of assets (₹ crore)
+    "realisation_cr",    # amount actually realised (₹ crore)
+    "realisation_pct",   # realisation as % of admitted claims
+    "initiated_by",      # who filed (Financial Creditor / Operational Creditor / Corporate Debtor)
 ]
-
 
 # Internal HTTP helpers
 def is_connected():
@@ -180,6 +172,10 @@ def detect_columns(raw_headers: list[str]) -> dict[str, str]:
     Uses HF Inference API to map messy raw Excel headers to the canonical database schema.
     Returns a dict mapping raw_header -> canonical_name. Falls back to {} on failure.
     """
+    if not is_connected():
+        logger.debug("[genai] detect_columns: no network — returning empty mapping.")
+        return {}
+    
     canonical_list = "\n".join(f"  - {c}" for c in CANONICAL_COLUMNS)
     headers_str = json.dumps(raw_headers, indent=2)
 
@@ -244,122 +240,20 @@ JSON mapping:
 
 # 2. Company name normalisation
 
-def normalise_company_names(names: list[str]) -> dict[str, str]:
-    """
-    Deduplicates and normalises inconsistent company names (e.g. Ltd -> Limited, Pvt -> Private).
-    Prevents label leakage before model training. Falls back to identity mapping.
-    """
-    fallback = {name: name for name in names}
-
-    if not names:
-        return fallback
-    
-    if not is_connected():
-        logger.debug("[genai] normalise_company_names: no network — using identity mapping.")
-        return fallback
-    # Deduplicate before sending to avoid wasting tokens on exact duplicates
-    unique_names = list(dict.fromkeys(names))  # preserves order, removes exact dupes
-
-    names_str = json.dumps(unique_names, indent=2)
-
-    prompt = f"""<s>[INST]
-You are a data cleaning assistant working with Indian corporate insolvency records.
-
-Your task: normalise company names. The same company often appears with different spellings, 
-abbreviations, or casing across different quarterly reports. Group variants and pick one 
-canonical form for each company.
-
-Rules for the canonical form:
-1. Use Title Case (e.g. "Videocon Industries Limited" not "VIDEOCON INDUSTRIES LIMITED")
-2. Spell out abbreviations where clear (Ltd → Limited, Pvt → Private, Co → Company)
-3. Remove redundant bracketed clarifications if they add no information (e.g. "(India)" when it's already an Indian company)
-4. Keep legally significant words (e.g. keep "India" if it distinguishes from a foreign entity)
-
-COMPANY NAMES TO NORMALISE:
-{names_str}
-
-Return ONLY a valid JSON object mapping each input name to its canonical form.
-Every input name must appear as a key. Do not skip any.
-No explanation, no markdown, no prose.
-
-Example output:
-{{"VIDEOCON INDUSTRIES LTD": "Videocon Industries Limited", "Videocon Ind. Ltd": "Videocon Industries Limited"}}
-
-JSON mapping:
-[/INST]"""
-
-    raw_response = _hf_generate(prompt, max_new_tokens=600)
-
-    if not raw_response:
-        logger.warning("[genai] normalise_company_names: API call failed — using identity mapping.")
-        return fallback
-
-    parsed = _extract_json(raw_response)
-
-    if not isinstance(parsed, dict):
-        logger.warning(
-            f"[genai] normalise_company_names: Could not parse JSON:\n{raw_response}"
-        )
-        return fallback
-
-    # Build final mapping covering all original (non-deduplicated) input names
-    result: dict[str, str] = {}
-    for name in names:
-        # Use the normalised form if the model returned it, else fall back to original
-        result[name] = parsed.get(name, name)
-
-    logger.info(
-        f"[genai] normalise_company_names: processed {len(unique_names)} unique names."
-    )
-    return result
-
-
-# 3. Dynamic risk narrative
-
 def generate_risk_narrative(case_inputs: dict, predictions: dict) -> str:
-    """
-    Generates a plain-English, 2-3 sentence risk narrative summarizing the case assessment for the PDF report.
-    If the API call fails, falls back to a clean, template-populated text.
-    """
-    # Build a concise context string for the prompt
-    case_type     = case_inputs.get("case_type", "legal dispute")
-    court         = case_inputs.get("court", "court")
-    state         = case_inputs.get("state", "")
-    sector        = case_inputs.get("sector", "")
-    claim         = case_inputs.get("claim_amount_lakhs", 0)
+    case_type  = case_inputs.get("case_type", "CIRP (IBC)")
+    sector     = case_inputs.get("sector", "")
+    claim      = case_inputs.get("claim_amount_lakhs", 0)
 
-    dur           = predictions.get("duration_months", 0)
-    dur_low       = predictions.get("duration_low", 0)
-    dur_high      = predictions.get("duration_high", 0)
-    prob          = predictions.get("outcome_prob", 0.5)
-    real          = predictions.get("realisation_pct", 0)
-    real_low      = predictions.get("realisation_low", 0)
-    real_high     = predictions.get("realisation_high", 0)
-    risk_score    = predictions.get("risk_score", 50)
+    dur        = predictions.get("duration_months", 0)
+    dur_low    = predictions.get("duration_low", 0)
+    dur_high   = predictions.get("duration_high", 0)
+    prob       = predictions.get("outcome_prob", 0.5)
+    real       = predictions.get("realisation_pct", 0)
+    real_low   = predictions.get("realisation_low", 0)
+    real_high  = predictions.get("realisation_high", 0)
+    risk_score = predictions.get("risk_score", 50)
     recommendation = predictions.get("recommendation", "")
-    data_source   = predictions.get("data_source", "NJDG")
-
-    adjournments  = case_inputs.get("num_prior_adjournments", 0)
-    interim_order = case_inputs.get("has_interim_order", False)
-    senior_counsel = case_inputs.get("represented_by_senior_counsel", False)
-    lawyer_wr     = case_inputs.get("claimant_lawyer_win_rate", 0.5)
-
-    # Summarise key risk signals for the model to reason about
-    risk_signals = []
-    if adjournments > 15:
-        risk_signals.append(f"high adjournment count ({adjournments})")
-    if not interim_order:
-        risk_signals.append("no interim order obtained")
-    if senior_counsel:
-        risk_signals.append("senior counsel engaged")
-    if lawyer_wr >= 0.65:
-        risk_signals.append(f"strong claimant lawyer track record ({lawyer_wr:.0%} win rate)")
-    elif lawyer_wr <= 0.35:
-        risk_signals.append(f"weak claimant lawyer track record ({lawyer_wr:.0%} win rate)")
-
-    risk_signal_str = (
-        ", ".join(risk_signals) if risk_signals else "no notable risk signals identified"
-    )
 
     realisation_line = (
         f"Estimated financial recovery: {real_low:.1f}%–{real_high:.1f}% of admitted claims "
@@ -375,14 +269,12 @@ Write exactly 2–3 sentences summarising the risk assessment below.
 Use plain English. Be specific — mention actual numbers. 
 Do not use bullet points, headers, or markdown. 
 Do not start with "This report" or "Based on". 
-Do not include any disclaimer or legal caveat — those appear elsewhere in the report.
+Do not include any disclaimer or legal caveat.
 
 CASE DETAILS:
 - Type: {case_type}
-- Court: {court}, {state}
 - Sector: {sector}
-- Claim amount: ₹{claim:,.0f} lakhs
-- Data source: {data_source}
+- Admitted claim: ₹{claim/100:,.1f} crore
 
 MODEL PREDICTIONS:
 - Probability of favourable outcome: {prob:.0%}
@@ -391,35 +283,86 @@ MODEL PREDICTIONS:
 - Composite risk score: {risk_score:.0f}/100
 - Overall recommendation: {recommendation}
 
-KEY RISK SIGNALS:
-- {risk_signal_str}
-
 Write the 2–3 sentence narrative now:
 [/INST]"""
 
     raw_response = _hf_generate(prompt, max_new_tokens=200)
 
     if raw_response and len(raw_response.strip()) > 30:
-        # Light cleanup — strip any accidental leading/trailing quotes or newlines
-        narrative = raw_response.strip().strip('"').strip("'").strip()
-        logger.info("[genai] generate_risk_narrative: narrative generated successfully.")
-        return narrative
+        return raw_response.strip().strip('"').strip("'").strip()
 
-    # Fallback: template-based narrative using prediction values
-    logger.warning("[genai] generate_risk_narrative: API call failed — using template fallback.")
-    fallback_narrative = (
-        f"This {case_type} filed at {court} carries a composite risk score of "
+    # Fallback
+    fallback = (
+        f"This {case_type} in the {sector} sector carries a composite risk score of "
         f"{risk_score:.0f}/100, with the model estimating a {prob:.0%} probability of a "
         f"favourable outcome and an expected duration of {dur:.0f} months "
         f"(range: {dur_low:.0f}–{dur_high:.0f} months). "
     )
     if real > 0:
-        fallback_narrative += (
-            f"The estimated financial recovery range is {real_low:.1f}%–{real_high:.1f}% "
+        fallback += (
+            f"Estimated financial recovery is {real_low:.1f}%–{real_high:.1f}% "
             f"of admitted claims, with a median estimate of {real:.1f}%. "
         )
-    fallback_narrative += f"Overall assessment: {recommendation}."
-    return fallback_narrative
+    fallback += f"Overall assessment: {recommendation}."
+    return fallback
+
+def normalise_company_names(names: list[str]) -> dict[str, str]:
+    """
+    Normalises inconsistent company names across quarterly reports.
+    Falls back to identity mapping on API failure.
+    """
+    fallback = {name: name for name in names}
+
+    if not names:
+        return fallback
+
+    if not is_connected():
+        logger.debug("[genai] normalise_company_names: no network — using identity mapping.")
+        return fallback
+
+    unique_names = list(dict.fromkeys(names))
+    names_str = json.dumps(unique_names, indent=2)
+
+    prompt = f"""<s>[INST]
+You are a data cleaning assistant working with Indian corporate insolvency records.
+
+Normalise these company names — same company often appears with different spellings across quarterly reports.
+
+Rules:
+1. Use Title Case (e.g. "Videocon Industries Limited" not "VIDEOCON INDUSTRIES LIMITED")
+2. Spell out abbreviations (Ltd → Limited, Pvt → Private, Co → Company)
+3. Remove redundant bracketed clarifications if they add no information
+
+COMPANY NAMES TO NORMALISE:
+{names_str}
+
+Return ONLY a valid JSON object mapping each input name to its canonical form.
+Every input name must appear as a key. No explanation, no markdown, no prose.
+
+Example:
+{{"VIDEOCON INDUSTRIES LTD": "Videocon Industries Limited", "Videocon Ind. Ltd": "Videocon Industries Limited"}}
+
+JSON mapping:
+[/INST]"""
+
+    raw_response = _hf_generate(prompt, max_new_tokens=600)
+
+    if not raw_response:
+        logger.warning("[genai] normalise_company_names: API call failed — using identity mapping.")
+        return fallback
+
+    parsed = _extract_json(raw_response)
+
+    if not isinstance(parsed, dict):
+        logger.warning(f"[genai] normalise_company_names: Could not parse JSON:\n{raw_response}")
+        return fallback
+
+    result: dict[str, str] = {}
+    for name in names:
+        result[name] = parsed.get(name, name)
+
+    logger.info(f"[genai] normalise_company_names: processed {len(unique_names)} unique names.")
+    return result
 
 
 # Batch wrapper
