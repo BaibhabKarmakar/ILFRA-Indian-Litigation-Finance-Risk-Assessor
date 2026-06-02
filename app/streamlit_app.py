@@ -133,7 +133,7 @@ with tab1:
                 "Liquidation Value of Assets (₹ Crore)", 0.0, 10000.0, 50.0
             )
 
-        submitted = st.form_submit_button("🔍 Assess Risk", use_container_width=True)
+        submitted = st.form_submit_button("🔍 Assess Risk", width='stretch')
 
     if submitted:
         case_input = {
@@ -157,14 +157,21 @@ with tab1:
         st.subheader("Assessment Results")
 
         k1, k2, k3, k4 = st.columns(4)
-        k1.metric("Risk Score",       f"{result['risk_score']} / 100")
-        k2.metric("Recommendation",    result["recommendation"])
+        k1.metric("Risk Score", f"{result['risk_score']}", delta="/ 100", delta_color="off")
         k3.metric("Outcome Probability",
-                  f"{result['outcome_prob']:.0%}",
-                  delta=result["outcome_label"])
+          f"{result['outcome_prob']:.0%}",
+          delta=result["outcome_label"],
+          delta_color="normal" if result["outcome_label"] == "Favourable" else "inverse")
         k4.metric("Expected Duration",
-                  f"{result['duration_months']} mo",
-                  delta=f"{result['duration_low']}–{result['duration_high']} mo range")
+          f"{result['duration_months']} mo",
+          delta=f"Range: {result['duration_low']}–{result['duration_high']} mo",
+          delta_color="off")
+
+        st.markdown(
+            f"<div style='font-size:18px; font-weight:600; padding:10px 0'>"
+            f"📋 {result['recommendation']}</div>",
+         unsafe_allow_html=True
+        )
 
         if result["realisation_pct"] > 0:
             r1, r2, r3 = st.columns(3)
@@ -186,7 +193,7 @@ with tab1:
                 plot_bgcolor="rgba(0,0,0,0)",
                 height=280,
             )
-            st.plotly_chart(fig_dur, use_container_width=True)
+            st.plotly_chart(fig_dur, width='stretch')
 
         with c2:
             fig_out = go.Figure(go.Indicator(
@@ -204,7 +211,7 @@ with tab1:
                 },
             ))
             fig_out.update_layout(height=280)
-            st.plotly_chart(fig_out, use_container_width=True)
+            st.plotly_chart(fig_out, width='stretch')
 
         # Per-case SHAP
         shap = result.get("shap", {})
@@ -236,7 +243,7 @@ with tab1:
                 for tab_obj, (key, title) in zip(shap_tab_objects, shap_data):
                     with tab_obj:
                         fig = _shap_waterfall_chart(shap[key], title)
-                        st.plotly_chart(fig, use_container_width=True)
+                        st.plotly_chart(fig, width='stretch')
                         st.caption(
                             f"Base value (model average) plus these contributions = "
                             f"the final prediction for this case."
@@ -316,7 +323,7 @@ with tab2:
             st.subheader("Training Metrics")
             st.dataframe(
                 metrics_df.style.format("{:.3f}", na_rep="—"),
-                use_container_width=True,
+                width='stretch',
             )
             st.divider()
 
@@ -341,7 +348,7 @@ with tab2:
                     f"{model_name} Model — Global Feature Importance (SHAP)"
                 )
                 if fig:
-                    st.plotly_chart(fig, use_container_width=True)
+                    st.plotly_chart(fig, width='stretch')
                     st.divider()
 
         else:
@@ -375,7 +382,7 @@ with tab2:
                     height=380,
                     plot_bgcolor="rgba(0,0,0,0)",
                 )
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width='stretch')
 
         # Calibration diagram
         raw_path = MODELS_DIR / "calibration_curve_raw.csv"
@@ -409,7 +416,7 @@ with tab2:
                 height=380,
                 plot_bgcolor="rgba(0,0,0,0)",
             )
-            st.plotly_chart(fig_cal, use_container_width=True)
+            st.plotly_chart(fig_cal, width='stretch')
             st.caption(
                 "A perfectly calibrated model follows the dashed diagonal. "
                 "Points above = model underestimates; below = overestimates."

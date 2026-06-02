@@ -152,7 +152,7 @@ class CBREngine:
                 filing_year=None,
                 claim_amount_lakhs=None,
                 duration_months=float(base["duration_days"][idx] / 30) if base["duration_days"] is not None else None,
-                favourable=None,
+                favourable=int(base["favourable"][idx]) if base["favourable"] is not None else None,
                 realisation_pct=float(base["realisation_pct"][idx]),
                 resolution_status=str(base["resolution_status"][idx]) if base["resolution_status"] is not None else None,
             ))
