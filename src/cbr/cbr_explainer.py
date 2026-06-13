@@ -63,8 +63,8 @@ def blend_summary(ml_pred: dict, cbr_adapted: dict) -> str:
     lines = []
 
     # Duration blending
-    if "duration" in ml_pred and "cbr_duration_months" in cbr_adapted:
-        ml_dur  = ml_pred["duration"]["p50"]
+    if "duration_months" in ml_pred and "cbr_duration_months" in cbr_adapted:
+        ml_dur = ml_pred["duration_months"]
         cbr_dur = cbr_adapted["cbr_duration_months"]
         diff    = abs(ml_dur - cbr_dur)
         if diff < 6:
@@ -80,8 +80,8 @@ def blend_summary(ml_pred: dict, cbr_adapted: dict) -> str:
             )
 
     # Outcome blending
-    if "p_favourable" in ml_pred and "cbr_p_favourable" in cbr_adapted:
-        ml_p  = ml_pred["p_favourable"]
+    if "outcome_prob" in ml_pred and "cbr_p_favourable" in cbr_adapted:
+        ml_p = ml_pred["outcome_prob"]
         cbr_p = cbr_adapted["cbr_p_favourable"]
         diff  = abs(ml_p - cbr_p)
         if diff < 0.10:

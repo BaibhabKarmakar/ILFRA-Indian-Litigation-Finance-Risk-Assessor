@@ -1,6 +1,7 @@
 """
-src/train.py — Trains duration, outcome, and realisation models.
-Uses LightGBM if available, falls back to sklearn GradientBoosting.
+Model training orchestrator.
+Trains LightGBM (or sklearn GradientBoosting fallback) models for expected duration, 
+outcome classification, and creditor realisation.
 """
 
 import sys, os
@@ -35,11 +36,7 @@ from src.training.feature_engineering import get_feature_cols, get_ibc_feature_c
 #                 subsample=0.8, colsample_bytree=0.8, random_state=42, n_jobs=-1)
 
 def _load_best_params(model_name: str) -> dict:
-    """
-    Loads tuned hyperparameters from best_params.json.
-    Falls back to sensible defaults if tune.py hasn't been run yet,
-    so train.py stays usable out of the box.
-    """
+    """Loads tuned parameters from best_params.json, or falls back to default hyperparams."""
     params_path = MODELS_DIR / "best_params.json"
     defaults = dict(
         n_estimators=300, learning_rate=0.05, num_leaves=63,
@@ -56,7 +53,7 @@ def _load_best_params(model_name: str) -> dict:
     params.update({"random_state": 42, "n_jobs": -1, "verbose": -1})
     return params
 
-# ── Model Factories ───────────────────────────────────────────────────────────
+# Model Factories
 _SKL_FALLBACK = dict(
     n_estimators=300,
     learning_rate=0.05,
@@ -80,11 +77,7 @@ def make_cls(**kw):
     return GradientBoostingClassifier(**{**_SKL_FALLBACK, **kw})
 
 def make_quantile(alpha: float, model_name: str = "duration"):
-    """
-    Factory for quantile regressors using Pinball Loss.
-    model_name tells _load_best_params which tuned params to pull
-    — pass "realisation" when building the realisation quantile models.
-    """
+    """Factory for quantile regressors using pinball loss to set optimistic (q10) and pessimistic (q90) limits."""
     if USE_LGB:
         import lightgbm as lgb
         return lgb.LGBMRegressor(
@@ -107,13 +100,9 @@ def get_fi(m, cols):
         return pd.Series(m.feature_importances_, index=cols).sort_values(ascending=False)
     return pd.Series(dtype=float)
 
-# ── Duration ──────────────────────────────────────────────────────────────────
+# Duration models
 def train_duration(df):
-    """
-    Trains the litigation duration model suite.
-    Includes a core regressor for expected time, and two quantile regressors
-    to establish best-case (q10) and worst-case (q90) timelines.
-    """
+    """Trains expected duration models (median and q10/q90 interval bands)."""
     fc = get_feature_cols()
     X, y = df[fc].fillna(0), df["duration_months"]
     Xtr, Xte, ytr, yte = train_test_split(X, y, test_size=0.2, random_state=42)
@@ -129,12 +118,9 @@ def train_duration(df):
     get_fi(m, fc).to_csv(MODELS_DIR / "duration_feature_importance.csv", header=["importance"])
     return {"mae_months": round(mae,2), "r2": round(r2,3)}
 
-# ── Outcome ───────────────────────────────────────────────────────────────────
+# Outcome models
 def train_outcome(df):
-    """
-    Trains a binary classifier predicting the probability of a favourable outcome
-    for the claimant. Crucial for assessing baseline case viability.
-    """
+    """Trains binary classifier to predict baseline probability of a favourable outcome."""
     fc = get_feature_cols()
     X, y = df[fc].fillna(0), df["favourable_outcome"]
     Xtr, Xte, ytr, yte = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
@@ -147,13 +133,9 @@ def train_outcome(df):
     get_fi(m, fc).to_csv(MODELS_DIR / "outcome_feature_importance.csv", header=["importance"])
     return {"auc": round(auc,3)}
 
-# ── Realisation ───────────────────────────────────────────────────────────────
+# Realisation models
 def train_realisation(df):
-    """
-    Trains models estimating the percentage of the claim value likely to be recovered.
-    Only applicable for purely financial/commercial disputes (e.g., IBC).
-    Trains a mean estimator and q10/q90 bounds for financial risk scenarios.
-    """
+    """Trains expected realisation (recovery %) models and q10/q90 bounds for financial disputes."""
     fc = get_ibc_feature_cols()
     df = df[df["realisation_pct"].notna()].copy()
     X, y = df[fc].fillna(0), df["realisation_pct"]
@@ -170,14 +152,9 @@ def train_realisation(df):
     get_fi(m, fc).to_csv(MODELS_DIR / "realisation_feature_importance.csv", header=["importance"])
     return {"mae_pct": round(mae,2), "r2": round(r2,3)}
 
-# ── Main ──────────────────────────────────────────────────────────────────────
+# Ingest & Train
 def main():
-    """
-    Orchestrator — runs whichever pipelines are active.
-
-    IBBI pipeline: active — trains on real ibbi_real.csv
-    NJDG pipeline: inactive — no real row-level data available yet
-    """
+    """Runs active training pipelines (currently IBBI; NJDG is skipped due to lack of raw data)."""
     print("=" * 60)
     print("LitFin Risk Assessor — Model Training")
     print("=" * 60)

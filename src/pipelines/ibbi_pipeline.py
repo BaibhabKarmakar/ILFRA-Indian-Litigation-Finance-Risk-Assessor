@@ -32,7 +32,7 @@ import joblib
 from pathlib import Path
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import (
-    mean_absolute_error, r2_score,
+    mean_absolute_error, r2_score, mean_squared_error,
     roc_auc_score, classification_report
 )
 from sklearn.calibration import CalibratedClassifierCV, calibration_curve
@@ -128,6 +128,43 @@ def _save_fi(m, cols, name: str):
           .to_csv(MODELS_DIR / f"{name}_feature_importance.csv",
                   header=["importance"])
 
+# ── SHAP explainer ────────────────────────────────────────────────────────────
+
+def _save_shap(m, X_train: np.ndarray, cols: list, name: str) -> None:
+    """
+    Fits a TreeExplainer on the trained model and saves:
+      - models/{name}_shap_explainer.pkl   — for per-case inference
+      - models/{name}_shap_values.csv      — global mean |SHAP| for Model Insights tab
+
+    Uses X_train (not X_test) because global importance should reflect
+    the distribution the model was actually trained on.
+    Skips silently if SHAP is not installed.
+    """
+    try:
+        import shap
+    except ImportError:
+        print(f"[ibbi_pipeline] shap not installed — skipping SHAP for {name}")
+        return
+
+    try:
+        explainer = shap.TreeExplainer(m)
+        sv = explainer(X_train)
+
+        # For binary classifiers, sv.values has shape (n, features, 2) — take class-1 slice
+        values = sv.values
+        if values.ndim == 3:
+            values = values[:, :, 1]
+
+        mean_abs = np.abs(values).mean(axis=0)
+        pd.Series(mean_abs, index=cols)\
+          .sort_values(ascending=False)\
+          .to_csv(MODELS_DIR / f"{name}_shap_values.csv", header=["mean_abs_shap"])
+
+        joblib.dump(explainer, MODELS_DIR / f"{name}_shap_explainer.pkl")
+        print(f"[ibbi_pipeline] SHAP saved: {name}_shap_explainer.pkl + {name}_shap_values.csv")
+
+    except Exception as e:
+        print(f"[ibbi_pipeline] SHAP failed for {name}: {e}")
 
 # ── ECE helper ────────────────────────────────────────────────────────────────
 
@@ -195,12 +232,15 @@ def train_ibc_duration(df: pd.DataFrame) -> dict:
     preds = m.predict(Xte)
     mae = mean_absolute_error(yte, preds)
     r2  = r2_score(yte, preds)
-    print(f"[ibbi_pipeline] Duration — MAE: {mae:.1f} days | R²: {r2:.3f}")
+    mse= mean_squared_error(yte, preds)
+    rmse = np.sqrt(mse)
+    print(f"[ibbi_pipeline] Duration — MAE: {mae:.1f} days | R²: {r2:.3f} | RMSE: {rmse:.1f}")
 
     joblib.dump(m,   MODELS_DIR / "ibc_duration_model.pkl")
     joblib.dump(q10, MODELS_DIR / "ibc_duration_q10.pkl")
     joblib.dump(q90, MODELS_DIR / "ibc_duration_q90.pkl")
     _save_fi(m, fc, "ibc_duration")
+    _save_shap(m, Xtr.values, fc, "ibc_duration")
 
     return {"mae_days": round(mae, 2), "r2": round(r2, 3)}
 
@@ -237,6 +277,7 @@ def train_ibc_outcome(df: pd.DataFrame) -> dict:
 
     joblib.dump(m, MODELS_DIR / "ibc_outcome_model.pkl")
     _save_fi(m, fc, "ibc_outcome")
+    _save_shap(m, Xtr.values, fc, "ibc_outcome")
 
     return {"auc": round(auc, 3)}
 
@@ -328,6 +369,7 @@ def train_realisation(df: pd.DataFrame) -> dict:
     joblib.dump(q10, MODELS_DIR / "realisation_q10.pkl")
     joblib.dump(q90, MODELS_DIR / "realisation_q90.pkl")
     _save_fi(m, fc, "realisation")
+    _save_shap(m, Xtr.values, fc, "realisation")
 
     return {"mae_pct": round(mae, 2), "r2": round(r2, 3)}
 
@@ -347,25 +389,25 @@ def run():
     df = run_feature_engineering()
 
     # 2. Duration
-    print("\n── Duration ──────────────────────────────────────────")
+    print("\n[ibbi_pipeline] Training Duration model...")
     metrics_dur = train_ibc_duration(df)
 
     # 3. Outcome
-    print("\n── Outcome ───────────────────────────────────────────")
+    print("\n[ibbi_pipeline] Training Outcome model...")
     metrics_out = train_ibc_outcome(df)
 
     '''
     # 4. Calibration
-    print("\n── Calibration ───────────────────────────────────────")
+    print("\n[ibbi_pipeline] Outcome calibration...")
     calibrate_ibc_outcome(df)
     '''
 
     # 5. Realisation
-    print("\n── Realisation ───────────────────────────────────────")
+    print("\n[ibbi_pipeline] Training Realisation model...")
     metrics_real = train_realisation(df)
 
     # Summary
-    print("\n── Summary ───────────────────────────────────────────")
+    print("\n[ibbi_pipeline] Training Summary:")
     summary = {
         "ibc_duration":    metrics_dur,
         "ibc_outcome":     metrics_out,

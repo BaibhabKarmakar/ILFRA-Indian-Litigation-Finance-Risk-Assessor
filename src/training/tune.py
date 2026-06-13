@@ -25,15 +25,15 @@ from sklearn.metrics import roc_auc_score, mean_absolute_error
 
 optuna.logging.set_verbosity(optuna.logging.WARNING)  # suppress per-trial noise
 
-PROCESSED_DIR = Path(__file__).parent.parent / "data" / "processed"
-MODELS_DIR    = Path(__file__).parent.parent / "models"
+PROCESSED_DIR = Path(__file__).parent.parent.parent / "data" / "processed"
+MODELS_DIR    = Path(__file__).parent.parent.parent / "models"
 MODELS_DIR.mkdir(parents=True, exist_ok=True)
 
 N_TRIALS = 40      # Optuna trials per model — increase to 80 for real data
 N_FOLDS  = 5       # CV folds
 SEED     = 42
 
-from training.feature_engineering import get_feature_cols, get_ibc_feature_cols
+from training.feature_engineering import get_feature_cols, get_ibc_duration_feature_cols, get_ibc_feature_cols, get_ibc_outcome_feature_cols
 
 
 # ── Search spaces ─────────────────────────────────────────────────────────────
@@ -93,7 +93,7 @@ def _objective_duration(trial: optuna.Trial, X: np.ndarray, y: np.ndarray) -> fl
     kf = KFold(n_splits=N_FOLDS, shuffle=True, random_state=SEED)
     maes = []
     for train_idx, val_idx in kf.split(X):
-        X_tr, X_val = X[train_idx], X[val_idx]
+        X_tr, X_val = X.iloc[train_idx], X.iloc[val_idx]
         y_tr, y_val = y[train_idx], y[val_idx]
         m = lgb.LGBMRegressor(**params)
         m.fit(X_tr, y_tr,
@@ -114,7 +114,7 @@ def _objective_realisation(trial: optuna.Trial, X: np.ndarray, y: np.ndarray) ->
     kf = KFold(n_splits=N_FOLDS, shuffle=True, random_state=SEED)
     maes = []
     for train_idx, val_idx in kf.split(X):
-        X_tr, X_val = X[train_idx], X[val_idx]
+        X_tr, X_val = X.iloc[train_idx], X.iloc[val_idx]
         y_tr, y_val = y[train_idx], y[val_idx]
         m = lgb.LGBMRegressor(**params)
         m.fit(X_tr, y_tr,
@@ -156,41 +156,69 @@ def main():
     print("ILFRA — Hyperparameter Tuning")
     print("=" * 60)
 
-    njdg = pd.read_csv(PROCESSED_DIR / "njdg_features.csv")
+    #njdg = pd.read_csv(PROCESSED_DIR / "njdg_features.csv")
     ibc  = pd.read_csv(PROCESSED_DIR / "ibc_features.csv")
 
-    fc_njdg = get_feature_cols()
+    #fc_njdg = get_feature_cols()
     fc_ibc  = get_ibc_feature_cols()
 
-    X_njdg = njdg[fc_njdg].fillna(0)
+    #X_njdg = njdg[fc_njdg].fillna(0)
     X_ibc  = ibc[fc_ibc].fillna(0)
+
+    fc_ibc      = get_ibc_feature_cols()
+    fc_duration = get_ibc_duration_feature_cols()
+    fc_outcome  = get_ibc_outcome_feature_cols()
 
     best_params = {}
     all_trials  = []
 
-    # 1. Outcome classifier
-    y_outcome = njdg["favourable_outcome"].values
+    # 1. IBC Outcome classifier
+    X_outcome = ibc[fc_outcome].fillna(0)
+    y_outcome = ibc["favourable_outcome"].values
     params_outcome, study_outcome = tune_model(
-        "Outcome classifier", _objective_outcome, X_njdg, y_outcome
+        "IBC Outcome classifier", _objective_outcome, X_outcome, y_outcome
     )
     best_params["outcome"] = params_outcome
     for t in study_outcome.trials:
         all_trials.append({"model": "outcome", "trial": t.number,
                            "score": t.value, **t.params})
 
-    # 2. Duration regressor
-    y_duration = njdg["duration_months"].values
+    # 2. IBC Duration regressor
+    ibc_closed = ibc[ibc["duration_days"].notna() & (ibc["duration_days"] > 0)].copy()
+    X_duration = ibc_closed[fc_duration].fillna(0)
+    y_duration = ibc_closed["duration_days"].values
     params_duration, study_duration = tune_model(
-        "Duration regressor", _objective_duration, X_njdg, y_duration
+        "IBC Duration regressor", _objective_duration, X_duration, y_duration
     )
     best_params["duration"] = params_duration
     for t in study_duration.trials:
         all_trials.append({"model": "duration", "trial": t.number,
                            "score": t.value, **t.params})
 
+
+    # 1. Outcome classifier
+    '''y_outcome = njdg["favourable_outcome"].values
+    params_outcome, study_outcome = tune_model(
+        "Outcome classifier", _objective_outcome, X_njdg, y_outcome
+    )
+    best_params["outcome"] = params_outcome
+    for t in study_outcome.trials:
+        all_trials.append({"model": "outcome", "trial": t.number,
+                           "score": t.value, **t.params})'''
+
+    # 2. Duration regressor
+    '''y_duration = njdg["duration_months"].values
+    params_duration, study_duration = tune_model(
+        "Duration regressor", _objective_duration, X_njdg, y_duration
+    )
+    best_params["duration"] = params_duration
+    for t in study_duration.trials:
+        all_trials.append({"model": "duration", "trial": t.number,
+                           "score": t.value, **t.params})'''
+
     # 3. Realisation regressor  (IBC only — filter to rows with realisation_pct)
     ibc_real = ibc[ibc["realisation_pct"].notna()].copy()
-    X_real = ibc_real[fc_ibc].fillna(0).values
+    X_real = ibc_real[fc_ibc].fillna(0)
     y_real = ibc_real["realisation_pct"].values
     params_real, study_real = tune_model(
         "Realisation regressor", _objective_realisation, X_real, y_real

@@ -23,7 +23,7 @@ PROCESSED_DIR = Path(__file__).parent.parent / "data" / "processed"
 MODELS_DIR = Path(__file__).parent.parent / "models"
 MODELS_DIR.mkdir(parents=True, exist_ok=True)
 
-CATEGORICAL_COLS = ["case_type", "court", "state", "sector"]
+CATEGORICAL_COLS = ["case_type", "court", "state"]
 
 
 def _encode_categoricals(df: pd.DataFrame, fit: bool = True,
@@ -121,7 +121,7 @@ def get_feature_cols() -> list[str]:
     """
     return [
         "case_type_enc", "court_enc", "court_hierarchy", "state_enc",
-        "sector_enc", "filing_year", "filing_quarter", "case_age_months",
+         "filing_year", "filing_quarter", "case_age_months",
         "log_claim_amount", "claim_bucket_enc",
         "claimant_lawyer_win_rate", "respondent_is_govt", "respondent_is_psu",
         "num_prior_adjournments", "adjournment_density",
@@ -159,42 +159,6 @@ def build_ibc_features(df: pd.DataFrame, fit: bool = True,
     # Large case flag — cases above 500 Cr behave structurally differently
     df["is_large_case"] = (df["admitted_claim_cr"] > 500).astype(int)
 
-    # Creditor/applicant ratio — handle missing gracefully
-    if "resolution_applicants_received" in df.columns and "no_of_financial_creditors" in df.columns:
-        df["applicants_per_creditor"] = (
-            df["resolution_applicants_received"] / df["no_of_financial_creditors"].clip(1)
-        )
-    else:
-        df["applicants_per_creditor"] = 0.0
-
-    # Fill missing process flags with 0 — not all quarters report these
-    for flag_col in ["ip_changed", "litigation_pending",
-                     "no_of_financial_creditors", "resolution_applicants_received"]:
-        if flag_col not in df.columns:
-            df[flag_col] = 0
-        df[flag_col] = df[flag_col].fillna(0)
-
-    # Encode categoricals
-    # bench may not exist in all quarters — default to "Unknown"
-    if "bench" not in df.columns:
-        df["bench"] = "Unknown"
-    df["bench"] = df["bench"].fillna("Unknown")
-
-    ibc_cats = ["sector", "bench", "resolution_status"]
-    for col in ibc_cats:
-        if col not in df.columns:
-            df[col] = "Unknown"
-        df[col] = df[col].fillna("Unknown")
-        if fit:
-            le = LabelEncoder()
-            df[col + "_enc"] = le.fit_transform(df[col].astype(str))
-            encoders[f"ibc_{col}"] = le
-        else:
-            le = encoders[f"ibc_{col}"]
-            known = set(le.classes_)
-            df[col] = df[col].apply(lambda x: x if x in known else le.classes_[0])
-            df[col + "_enc"] = le.transform(df[col].astype(str))
-
     return df, encoders
 
 
@@ -211,13 +175,6 @@ def get_ibc_feature_cols() -> list[str]:
         "is_large_case",
         "duration_days",
         "favourable_outcome",
-        "no_of_financial_creditors",
-        "resolution_applicants_received",
-        "applicants_per_creditor",
-        "ip_changed",
-        "litigation_pending",
-        "sector_enc",
-        "bench_enc",
         "admission_year",
     ]
 
@@ -234,13 +191,6 @@ def get_ibc_duration_feature_cols() -> list[str]:
         "log_liquidation_value",
         "claim_to_liquidation_ratio",
         "is_large_case",
-        "no_of_financial_creditors",
-        "resolution_applicants_received",
-        "applicants_per_creditor",
-        "ip_changed",
-        "litigation_pending",
-        "sector_enc",
-        "bench_enc",
         "admission_year",
     ]
 
@@ -257,16 +207,8 @@ def get_ibc_outcome_feature_cols() -> list[str]:
         "log_liquidation_value",
         "claim_to_liquidation_ratio",
         "is_large_case",
-        "no_of_financial_creditors",
-        "resolution_applicants_received",
-        "applicants_per_creditor",
-        "ip_changed",
-        "litigation_pending",
-        "sector_enc",
-        "bench_enc",
         "admission_year",
     ]
-
 
 # ── Entry point───────────────────────────────────────────────────────────────
 # main() is intentionally removed.

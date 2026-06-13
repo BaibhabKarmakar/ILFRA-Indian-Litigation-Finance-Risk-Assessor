@@ -1,8 +1,6 @@
 """
-src/cbr_engine.py
------------------
-Retrieves the K most similar historical cases for a new query
-and adapts their outcomes into a CBR prediction.
+Case-Based Reasoning (CBR) retrieval and adaptation engine.
+Finds similar historical cases using feature-weighted cosine similarity.
 """
 
 import numpy as np
@@ -11,7 +9,7 @@ from pathlib import Path
 from dataclasses import dataclass
 from typing import Optional
 
-MODELS_DIR = Path(__file__).parent.parent / "models"
+MODELS_DIR = Path(__file__).parent.parent.parent / "models"
 
 # Feature importance weights — higher = more important to similarity
 # These mirror the LightGBM feature importance rankings from training
@@ -38,18 +36,14 @@ NJDG_WEIGHTS = {
 }
 
 IBC_WEIGHTS = {
-    "resolution_status_enc":       3.0,
-    "log_admitted_claim":          2.0,
-    "no_of_financial_creditors":   1.8,
-    "resolution_applicants_received": 1.8,
-    "duration_days":               1.5,
-    "ip_changed":                  1.5,
-    "litigation_pending":          1.5,
-    "applicants_per_creditor":     1.5,
-    "sector_enc":                  1.0,
-    "bench_enc":                   1.0,
-    "admission_year":              1.0,
-    "favourable_outcome":          2.0,
+    "claim_to_liquidation_ratio": 3.0,
+    "log_admitted_claim":         2.8,
+    "log_liquidation_value":      2.5,
+    "duration_days":              2.0,
+    "admission_year":             1.5,
+    "favourable_outcome":         1.2,
+    "is_large_case":              0.5,
+    "sector_enc":                 0.3,
 }
 
 
@@ -87,13 +81,8 @@ class CBREngine:
                                      feature_cols: list,
                                      weight_map: dict) -> np.ndarray:
         """
-        Computes weighted cosine similarity between a query vector and
-        every row in the case base matrix.
-
-        Weighted cosine: instead of treating all dimensions equally,
-        multiply each dimension by its domain importance weight before
-        computing the dot product. This means case_type mismatch hurts
-        similarity much more than filing_quarter mismatch.
+        Computes cosine similarity weighted by feature domain importance.
+        This ensures critical factors (like case type) influence similarity more than secondary factors.
         """
         weights = np.array(
             [weight_map.get(col, 1.0) for col in feature_cols],
@@ -163,7 +152,7 @@ class CBREngine:
                 filing_year=None,
                 claim_amount_lakhs=None,
                 duration_months=float(base["duration_days"][idx] / 30) if base["duration_days"] is not None else None,
-                favourable=None,
+                favourable=int(base["favourable"][idx]) if base["favourable"] is not None else None,
                 realisation_pct=float(base["realisation_pct"][idx]),
                 resolution_status=str(base["resolution_status"][idx]) if base["resolution_status"] is not None else None,
             ))
@@ -171,9 +160,8 @@ class CBREngine:
 
     def adapt(self, similar_cases: list[SimilarCase]) -> dict:
         """
-        Derives CBR-adapted outcome estimates from retrieved cases.
-        Uses similarity-weighted averaging — cases with higher similarity
-        contribute more to the adapted estimate than distant ones.
+        Calculates similarity-weighted average outcomes from similar precedents.
+        Closer matches are given higher weights.
         """
         if not similar_cases:
             return {}

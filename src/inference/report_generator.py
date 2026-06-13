@@ -267,7 +267,7 @@ def _case_details_block(styles: dict, case_inputs: dict) -> list:
         "court":                       "Court",
         "state":                       "State",
         "sector":                      "Sector",
-        "claim_amount_lakhs":          "Claim Amount (₹ lakhs)",
+        "claim_amount_lakhs":          "Claim Amount (Rs. lakhs)",
         "claimant_lawyer_win_rate":    "Claimant Lawyer Win Rate",
         "num_prior_adjournments":      "Prior Adjournments",
         "has_interim_order":           "Interim Order Obtained",
@@ -277,7 +277,7 @@ def _case_details_block(styles: dict, case_inputs: dict) -> list:
         "filing_date":                 "Filing Date",
         # IBC fields
         "bench":                       "NCLT Bench",
-        "admitted_claim_cr":           "Admitted Claim (₹ Cr)",
+        "admitted_claim_cr":           "Admitted Claim (Rs. Cr)",
         "no_of_financial_creditors":   "No. of Financial Creditors",
         "resolution_applicants_received": "Resolution Applicants",
         "resolution_status":           "Resolution Status",
@@ -385,18 +385,18 @@ def _predictions_block(styles: dict, preds: dict) -> list:
     t = Table(
         [[dur_cell, out_cell, real_cell]],
         colWidths=[card_w, card_w, card_w],
-        rowHeights=None,
+        rowHeights=[80],
     )
     t.setStyle(TableStyle([
         ("BOX",           (0, 0), (0, 0), 1, colors.HexColor("#E5E7EB")),
         ("BOX",           (1, 0), (1, 0), 1, colors.HexColor("#E5E7EB")),
         ("BOX",           (2, 0), (2, 0), 1, colors.HexColor("#E5E7EB")),
         ("BACKGROUND",    (0, 0), (-1, -1), LIGHT_BG),
-        ("TOPPADDING",    (0, 0), (-1, -1), 10),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 10),
+        ("TOPPADDING",    (0, 0), (-1, -1), 8),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
         ("LEFTPADDING",   (0, 0), (-1, -1), 6),
         ("RIGHTPADDING",  (0, 0), (-1, -1), 6),
-        ("VALIGN",        (0, 0), (-1, -1), "MIDDLE"),
+        ("VALIGN",        (0, 0), (-1, -1), "TOP"),
     ]))
     elems.append(t)
     elems.append(Spacer(1, 8))
@@ -459,11 +459,11 @@ def _risk_factors_block(styles: dict, risk_factors: list[dict]) -> list:
     if not risk_factors:
         STUB_NOTE = True
         risk_factors = [
-            {"feature": "Claimant lawyer win rate", "impact": "Stronger win rate history increases favourable outcome probability", "direction": "positive"},
-            {"feature": "Prior adjournments",        "impact": "Higher adjournment count is associated with longer duration", "direction": "negative"},
-            {"feature": "Interim order obtained",    "impact": "Presence of interim order associated with better realisation", "direction": "positive"},
-            {"feature": "Court average duration",    "impact": "Court-level historical disposal speed influences estimates", "direction": "neutral"},
-            {"feature": "Claim amount (log-scaled)", "impact": "Larger claims tend to face longer pendency", "direction": "negative"},
+            {"feature": "Claim to liquidation ratio", "impact": "Higher ratio (deeply underwater assets) strongly associated with liquidation outcome", "direction": "negative"},
+            {"feature": "Admitted claim size",         "impact": "Larger claims tend to have more complex resolution processes", "direction": "negative"},
+            {"feature": "Liquidation value",           "impact": "Higher asset value relative to claims improves recovery prospects", "direction": "positive"},
+            {"feature": "Admission year",              "impact": "More recent admissions benefit from improved NCLT processes", "direction": "positive"},
+            {"feature": "Case size flag",              "impact": "Large cases (>Rs. 500 Cr) face structurally different resolution dynamics", "direction": "neutral"},
         ]
 
     rows = []
