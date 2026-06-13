@@ -32,7 +32,7 @@ import joblib
 from pathlib import Path
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import (
-    mean_absolute_error, r2_score,
+    mean_absolute_error, r2_score, mean_squared_error,
     roc_auc_score, classification_report
 )
 from sklearn.calibration import CalibratedClassifierCV, calibration_curve
@@ -232,7 +232,9 @@ def train_ibc_duration(df: pd.DataFrame) -> dict:
     preds = m.predict(Xte)
     mae = mean_absolute_error(yte, preds)
     r2  = r2_score(yte, preds)
-    print(f"[ibbi_pipeline] Duration — MAE: {mae:.1f} days | R²: {r2:.3f}")
+    mse= mean_squared_error(yte, preds)
+    rmse = np.sqrt(mse)
+    print(f"[ibbi_pipeline] Duration — MAE: {mae:.1f} days | R²: {r2:.3f} | RMSE: {rmse:.1f}")
 
     joblib.dump(m,   MODELS_DIR / "ibc_duration_model.pkl")
     joblib.dump(q10, MODELS_DIR / "ibc_duration_q10.pkl")
